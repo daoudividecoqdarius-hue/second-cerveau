@@ -1,7 +1,7 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.10-23';
+  const VERSION = '2026.11.10-24';
   const API = 'https://second-cerveau-api.second-cerveau-api.workers.dev'; // ton serveur Cloudflare (adresse publique, sans secret)
   const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
@@ -741,9 +741,10 @@
         el('div', { class: 'm', text: it.date ? `${when(it)} · ${isLate(it) ? 'en retard' : rel(E.dueAt(it))}` : 'À traiter' }),
         el('div', { class: 'chips' },
           el('button', { class: 'chip p', onclick: () => complete(it), text: '✓ Fait' }),
-          el('button', { class: 'chip', onclick: () => snooze(it, now + H), text: '+1 h' }),
-          el('button', { class: 'chip', onclick: () => snooze(it, tonight()), text: 'Ce soir' }),
-          el('button', { class: 'chip', onclick: () => snooze(it, tomorrow9()), text: 'Demain' }))));
+          // le report (+1 h, ce soir, demain) n'est proposé qu'une fois l'échéance passée
+          ...(isLate(it) ? [el('button', { class: 'chip', onclick: () => snooze(it, now + H), text: '+1 h' }),
+            el('button', { class: 'chip', onclick: () => snooze(it, tonight()), text: 'Ce soir' }),
+            el('button', { class: 'chip', onclick: () => snooze(it, tomorrow9()), text: 'Demain' })] : []))));
     }
 
     for (const m of (S.mail || []).slice(0, 4)) {
