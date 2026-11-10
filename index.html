@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Second Cerveau</title>
+<link rel="manifest" href="manifest.json">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Cerveau">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#6d5dfc">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="icon" href="icon.svg">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main id="view"></main>
+
+<button id="fab" aria-label="Ajouter">+</button>
+
+<nav id="tabs">
+  <button data-v="home" class="on"><svg viewBox="0 0 24 24"><path d="M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg><span>Aujourd'hui</span></button>
+  <button data-v="brain"><svg viewBox="0 0 24 24"><path d="M9 4a3 3 0 0 0-3 3 3 3 0 0 0-2 5 3 3 0 0 0 2 5 3 3 0 0 0 6 1V4a3 3 0 0 0-3 0zM15 4a3 3 0 0 1 3 3 3 3 0 0 1 2 5 3 3 0 0 1-2 5 3 3 0 0 1-6 1"/></svg><span>Mémoire</span></button>
+  <button data-v="chat"><svg viewBox="0 0 24 24"><path d="M4 5h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H9l-5 4V6a1 1 0 0 1 0-1z"/></svg><span>Assistant</span></button>
+  <button data-v="settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></svg><span>Réglages</span></button>
+</nav>
+
+<div id="sheetwrap" hidden>
+  <form id="sheet" autocomplete="off">
+    <div class="grab"></div>
+    <h3 id="sheettitle">Nouvelle entrée</h3>
+    <input type="text" id="s-title" placeholder="Ex : rendre le dossier vendredi à 14h" required>
+    <p class="hint" id="s-hint">Tu peux écrire en français normal : je repère la date et l'heure.</p>
+    <div class="grid2">
+      <label>Date<input type="date" id="s-date"></label>
+      <label>Heure<input type="time" id="s-time"></label>
+      <label>Importance
+        <select id="s-imp"><option value="1">Faible</option><option value="2" selected>Normale</option><option value="3">Haute</option></select>
+      </label>
+      <label>Catégorie
+        <select id="s-cat"><option>Cours</option><option>Admin</option><option>Message</option><option>Mail</option><option>Idée</option><option selected>Autre</option></select>
+      </label>
+    </div>
+    <textarea id="s-notes" rows="2" placeholder="Notes (facultatif)"></textarea>
+    <div class="actions">
+      <button type="button" class="btn ghost" id="s-del" hidden>Supprimer</button>
+      <button type="button" class="btn ghost" id="s-cancel">Annuler</button>
+      <button class="btn" id="s-save">Enregistrer</button>
+    </div>
+  </form>
+</div>
+
+<script src="engine.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
