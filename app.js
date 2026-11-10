@@ -1,7 +1,7 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.10-6';
+  const VERSION = '2026.11.10-7';
   const API = 'https://second-cerveau-api.second-cerveau-api.workers.dev'; // ton serveur Cloudflare (adresse publique, sans secret)
   const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
@@ -152,6 +152,14 @@
         }
         return "Je n'ai pas trouvé de quoi il s'agit. Redis-moi le nom exact de la tâche ou de l'événement.";
       } },
+    { id: 'mails', icon: '📧', name: 'Mes mails', desc: 'Les mails qui demandent une action', ex: "Qu'ai-je reçu comme mails ?",
+      match: t => /(?:mails?|e-?mails?|courriels?)/i.test(t) && /(?:qu['’]ai-je|qu['’]est[- ]ce que j['’]ai|j['’]ai (?:des|re[cç]u)|[àa] traiter|importants?|montre|liste|dernier)/i.test(t) && !/^(?:[ée]cris|r[ée]dige|pr[ée]pare|envoie)/i.test(t),
+      run: () => {
+        if (!S.srvToken) return "Le serveur n'est pas appairé : va dans Réglages.";
+        if (!S.mailOn) return "Gmail n'est pas encore connecté. Va dans Réglages → Mails (Gmail) → Connecter.";
+        const l = S.mail || [];
+        return l.length ? `📧 ${l.length} mail${l.length > 1 ? 's' : ''} à traiter :\n` + l.slice(0, 8).map(m => `• ${m.title}${m.date ? ' → ' + dayLabel(m.date) : ''}`).join('\n') + '\n\nIls sont aussi sur ton écran d\'accueil, avec le bouton « Ajouter au planning ».' : 'Rien de particulier dans tes mails récents 👌';
+      } },
     { id: 'terminer', icon: '✅', name: 'Terminer', desc: 'Marque une tâche comme faite', ex: "J'ai fini le dossier de stage",
       match: t => /^(?:j['’]ai (?:fini|termin[ée]|fait|envoy[ée]|rendu|pay[ée])|c['’]est (?:fait|fini)|fini|termin[ée])\b/i.test(t),
       run: t => {
@@ -286,7 +294,7 @@
     const r = await Tesseract.recognize(source, 'fra');
     return r.data.text || '';
   }
-  async function readFile(file) {
+  async function readFile(file, quiet) {
     if (file.type === 'application/pdf' || /\.pdf$/i.test(file.name)) {
       await loadScript(PDFJS + 'pdf.min.js');
       pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS + 'pdf.worker.min.js';
@@ -298,7 +306,7 @@
         txt += c.items.map(i => i.str + (i.hasEOL ? '\n' : ' ')).join('') + '\n';
       }
       if (txt.replace(/\s/g, '').length < 40) {            // PDF scanné : on lit l'image
-        say('Ce PDF est une image, je le lis comme une photo (ça peut prendre une minute)…', true); render();
+        if (!quiet) { say('Ce PDF est une image, je le lis comme une photo (ça peut prendre une minute)…', true); render(); }
         txt = '';
         for (let p = 1; p <= Math.min(n, 3); p++) {
           const page = await pdf.getPage(p), vp = page.getViewport({ scale: 2 });
@@ -309,7 +317,7 @@
       }
       return txt;
     }
-    if (/^image\//.test(file.type)) { say('Je lis la photo (ça peut prendre une minute)…', true); render(); return ocr(file); }
+    if (/^image\//.test(file.type)) { if (!quiet) { say('Je lis la photo (ça peut prendre une minute)…', true); render(); } return ocr(file); }
     throw new Error('Format non géré (PDF ou photo seulement).');
   }
   async function handleFile(file) {
@@ -402,10 +410,57 @@
       const ev = await srv('/api/events');
       const mapped = (ev.events || []).map(e => ({ id: 's' + e.id, title: e.title, date: e.date, time: e.time, endTime: e.endTime, loc: e.loc, cat: 'Cours', ro: true, cal: 'ESSEC', acct: 'ecole', done: false }));
       if (JSON.stringify(mapped) !== JSON.stringify(S.events.filter(e => e.acct === 'ecole'))) { S.events = S.events.filter(e => e.acct !== 'ecole').concat(mapped); ch = true; }
+      try {                                                           // mails repérés par le serveur
+        const ml = await srv('/api/mail/suggestions'), sig = JSON.stringify([ml.list, ml.connected, ml.error, ml.secretSet]);
+        if (sig !== S.mailSig) { S.mail = ml.list; S.mailOn = ml.connected; S.mailErr = ml.error; S.mailSecret = ml.secretSet; S.mailSig = sig; ch = true; }
+      } catch (e) {}
       S.srvSync = Date.now(); S.srvErr = '';
       try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {}
       if (ch) render();
+      autoReadAtts();
     } catch (e) { S.srvErr = e.message; } finally { syncing = false; }
+  }
+  /* Pièces jointes : le serveur les transmet, c'est le téléphone qui les lit (rien n'est analysé ailleurs) */
+  async function fetchAttachment(m, a) {
+    const r = await fetch(`${API}/api/mail/attachment?mid=${encodeURIComponent(m.id)}&aid=${encodeURIComponent(a.aid)}`, { headers: { Authorization: 'Bearer ' + S.srvToken } });
+    if (!r.ok) throw new Error('Pièce jointe indisponible (' + r.status + ')');
+    const j = await r.json(), bin = atob(j.data.replace(/-/g, '+').replace(/_/g, '/'));
+    return new File([Uint8Array.from(bin, c => c.charCodeAt(0))], a.name, { type: a.mime });
+  }
+  async function readMailAtts(m, force) {
+    S.mailDoc = S.mailDoc || {};
+    if (S.mailDoc[m.id] && !force) return;
+    for (const a of (m.atts || [])) {
+      try {
+        const txt = await readFile(await fetchAttachment(m, a), true);
+        if (txt.replace(/\s/g, '').length < 15) continue;
+        const d = E.extractDoc(txt);
+        S.mailDoc[m.id] = { name: a.name, kind: d.kind, title: d.title, date: d.date, time: d.time, amount: d.amount, notes: d.notes, imp: d.imp };
+        return;
+      } catch (e) { S.mailDocErr = e.message; }
+    }
+    S.mailDoc[m.id] = { name: ((m.atts || [])[0] || {}).name || '', none: true };
+  }
+  let attBusy = false;
+  async function autoReadAtts() {                    // les PDF des mails importants sont lus automatiquement ; les photos, à la demande
+    if (attBusy || !S.srvToken) return; attBusy = true;
+    try {
+      let ch = false;
+      for (const m of (S.mail || []).slice(0, 4)) {
+        if (!(m.atts || []).some(a => /pdf/i.test(a.mime)) || (S.mailDoc && S.mailDoc[m.id])) continue;
+        await readMailAtts(m); ch = true;
+      }
+      if (ch) { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} render(); }
+    } catch (e) {} finally { attBusy = false; }
+  }
+  function dismissMail(m) {
+    S.mail = (S.mail || []).filter(x => x.id !== m.id); S.mailSig = ''; if (S.mailDoc) delete S.mailDoc[m.id];
+    save(); render(); srv('/api/mail/dismiss', { id: m.id }).catch(() => {});
+  }
+  async function connectGmail() {
+    const msg = t => { const n = $('#mailmsg'); if (n) n.textContent = t; };
+    try { const r = await srv('/api/google/auth-url', {}); location.href = r.url; }
+    catch (e) { msg(S.mailSecret === false ? "Il manque le secret Google sur le serveur (voir le guide)." : 'Échec : ' + e.message); }
   }
   const b64key = k => Uint8Array.from(atob(k.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
   async function enablePush() {
@@ -491,6 +546,27 @@
           el('button', { class: 'chip', onclick: () => snooze(it, tonight()), text: 'Ce soir' }),
           el('button', { class: 'chip', onclick: () => snooze(it, tomorrow9()), text: 'Demain' }))));
     }
+
+    for (const m of (S.mail || []).slice(0, 4)) {
+      const doc = S.mailDoc && S.mailDoc[m.id], dd = doc && !doc.none && doc.date ? doc : null;
+      const eur = x => x.toFixed(2).replace('.', ',') + ' €';
+      const add = () => {
+        S.items.unshift(mk({ title: dd && doc.kind !== 'doc' ? doc.title : m.title, date: (dd && dd.date) || m.date || (m.kind === 'reply' ? E.dstr(addDays(1)) : ''), time: (dd && dd.time) || m.time || '',
+          imp: Math.max(m.imp, dd ? dd.imp : 0), cat: 'Mail',
+          notes: [`Mail de ${m.from} : ${m.subject}`, doc && !doc.none && `Pièce jointe ${doc.name} : ${doc.notes || doc.title}`, m.amount != null && `Montant dans le mail : ${eur(m.amount)}`].filter(Boolean).join('\n') }));
+        dismissMail(m);
+      };
+      v.append(el('div', { class: 'alert', style: 'border-color:var(--acc2)' },
+        el('div', { class: 't', text: '📧 ' + m.title }),
+        el('div', { class: 'm', text: (m.date ? `Date repérée : ${dayLabel(m.date)}${m.time ? ' à ' + m.time : ''}${m.amount != null ? ' · ' + eur(m.amount) : ''} · ` : '') + m.snippet }),
+        doc && !doc.none && el('div', { class: 'm', text: `📎 ${doc.name} : ${doc.title}${doc.date ? ' · ' + dayLabel(doc.date) + (doc.time ? ' ' + doc.time : '') : ''}${doc.amount != null ? ' · ' + eur(doc.amount) : ''}` }),
+        doc && doc.none && el('div', { class: 'm', text: `📎 ${doc.name || 'pièce jointe'} : illisible ou sans date` }),
+        el('div', { class: 'chips' },
+          el('button', { class: 'chip p', onclick: add, text: '➕ Ajouter au planning' }),
+          (m.atts || []).length > 0 && (!doc || doc.none) && el('button', { class: 'chip', onclick: async e => { e.target.textContent = 'Lecture…'; await readMailAtts(m, true); save(); render(); }, text: '📎 Lire la pièce jointe' }),
+          el('button', { class: 'chip', onclick: () => dismissMail(m), text: 'Ignorer' }))));
+    }
+    if ((S.mail || []).length > 4) v.append(el('p', { class: 'hint', text: `+ ${(S.mail || []).length - 4} autre(s) mail(s) à traiter. Traite ceux-ci pour voir la suite.` }));
 
     const dated = open().filter(i => i.date);
     const late = dated.filter(isLate).sort(byTime);
@@ -613,6 +689,13 @@
         el('button', { class: 'chip', onclick: testPush, text: 'Tester' }),
         el('button', { class: 'chip', onclick: async () => { await syncServer(); render(); }, text: 'Synchroniser' })),
       el('p', { class: 'hint', id: 'pushmsg', text: '' })));
+    v.append(el('div', { class: 'card' }, el('h3', { text: '📧 Mails (Gmail)' }),
+      el('p', { text: !S.srvToken ? "Appaire d'abord le serveur (carte ci-dessus)." : S.mailOn ? `Gmail connecté. Le serveur lit chaque mail en entier (texte et pièces jointes PDF), en lecture seule, uniquement pour repérer deadlines et réponses à faire. Il ne garde que l'essentiel (expéditeur, objet, début du texte, dates).${S.mailErr ? ' Erreur : ' + S.mailErr : ''}` : S.mailSecret === false ? 'Il manque encore le secret Google sur le serveur (voir le guide).' : 'Gmail pas encore connecté.' }),
+      el('div', { class: 'chips' },
+        !S.mailOn && el('button', { class: 'chip p', onclick: connectGmail, text: 'Connecter Gmail' }),
+        S.mailOn && el('button', { class: 'chip', onclick: async () => { try { await srv('/api/google/disconnect', {}); S.mail = []; S.mailOn = false; S.mailSig = ''; save(); render(); } catch (e) {} }, text: 'Déconnecter Gmail' })),
+      el('p', { class: 'hint', id: 'mailmsg', text: '' }),
+      el('p', { class: 'hint', text: "Mails de l'école : transfère-les vers ton Gmail (Paramètres → Transfert dans la boîte de l'école), je les verrai alors comme les autres." })));
     const perm = ('Notification' in window) ? Notification.permission : 'indisponible';
     v.append(el('div', { class: 'card' }, el('h3', { text: '🔔 Rappels' }),
       el('p', { text: `État : ${perm === 'granted' ? 'activés' : perm === 'denied' ? 'refusés (à changer dans les réglages iPhone)' : perm === 'default' ? 'pas encore activés' : 'non disponibles ici'}. Les rappels adaptent leur rythme à ta réactivité : réactivité apprise ×${S.rf.toFixed(2)} (${S.rf > 1.15 ? 'rappels plus tôt et plus fréquents' : S.rf < 0.85 ? 'rappels plus discrets' : 'rythme standard'}).` }),
@@ -706,6 +789,8 @@
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
   const pair = location.hash.match(/pair=([\w-]{20,})/);        // lien d'appairage : #pair=…
   if (pair) { S.srvToken = pair[1]; save(); try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {} say("☁️ Appairage réussi : ton téléphone est relié au serveur. Va dans Réglages pour activer les rappels app fermée.", true); }
+  const gh = location.hash.match(/google=(ok|err)/);          // retour de la connexion Gmail
+  if (gh) { say(gh[1] === 'ok' ? '📧 Gmail est connecté ! Je repère maintenant tes deadlines et les mails sans réponse.' : "La connexion à Gmail n'a pas abouti. Réessaie depuis Réglages → Mails (Gmail).", true); save(); try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {} }
   document.addEventListener('visibilitychange', () => { if (!document.hidden) { tick(); syncServer(); } });
   setInterval(tick, 30000);
   setInterval(() => { if (!document.hidden) syncServer(); }, 120000);
