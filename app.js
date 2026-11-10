@@ -1,7 +1,7 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.10-24';
+  const VERSION = '2026.11.10-25';
   const API = 'https://second-cerveau-api.second-cerveau-api.workers.dev'; // ton serveur Cloudflare (adresse publique, sans secret)
   const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
@@ -735,7 +735,7 @@
         el('div', { class: 'when', text: nxt ? `${when(nxt)} · ${rel(E.dueAt(nxt))}` : 'Ajoute ce qui te trotte dans la tête avec le bouton +' })),
       ring));
 
-    for (const it of open().filter(i => i.alertOpen)) {
+    for (const it of open().filter(i => i.alertOpen && (!i.date || isLate(i) || E.dueAt(i) - now <= 3 * H))) {   // la carte « Fait » n'apparaît que si l'échéance est proche ou passée
       v.append(el('div', { class: 'alert' },
         el('div', { class: 't', text: '🔔 ' + it.title }),
         el('div', { class: 'm', text: it.date ? `${when(it)} · ${isLate(it) ? 'en retard' : rel(E.dueAt(it))}` : 'À traiter' }),
