@@ -1,7 +1,7 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.10-18';
+  const VERSION = '2026.11.10-19';
   const API = 'https://second-cerveau-api.second-cerveau-api.workers.dev'; // ton serveur Cloudflare (adresse publique, sans secret)
   const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
@@ -626,6 +626,19 @@
       if (ch) { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} render(); }
     } catch (e) {} finally { sumBusy = false; }
   }
+  /* Rapproche un mail d'un événement ou d'une tâche déjà dans ton planning : mots rares en commun (nom, lieu, artiste…) */
+  const STOPW = new Set('lien interne mail note objet fwd message transmis bonjour merci cordialement votre notre vous nous pour avec dans cette entre apres avant https http html idmanif manifestation billet billetterie membres'.split(' '));
+  function relatedTo(m) {
+    const words = x => new Set((E.norm(x || '').match(/[a-z0-9]{5,}/g) || []).filter(w => !STOPW.has(w) && !/^\d+$/.test(w)));
+    const mine = words([m.subject, m.snippet, m.url].join(' ')); if (!mine.size) return null;
+    const td = today(); let best = null, bs = 0;
+    for (const x of [...visibleEvents().map(e => ({ ...e, ev: true })), ...open().filter(i => i.date)]) {
+      let sc = 0; for (const w of words(x.title)) if (mine.has(w)) sc += w.length;
+      if (!sc) continue; if (x.date >= td) sc += 3;
+      if (sc > bs) { bs = sc; best = x; }
+    }
+    return best;
+  }
   function mailOverview(m) {
     const c = S.mailSum && S.mailSum[m.id];
     if (!S.aiOn || !S.mailOn) return null;
@@ -735,20 +748,23 @@
     for (const m of (S.mail || []).slice(0, 4)) {
       const doc = S.mailDoc && S.mailDoc[m.id], dd = doc && !doc.none && doc.date ? doc : null;
       const eur = x => x.toFixed(2).replace('.', ',') + ' €';
+      const rel = relatedTo(m);
       const add = () => {
-        S.items.unshift(mk({ title: dd && doc.kind !== 'doc' ? doc.title : m.title, date: (dd && dd.date) || m.date || (m.kind === 'reply' ? E.dstr(addDays(1)) : ''), time: (dd && dd.time) || m.time || '',
+        S.items.unshift(mk({ title: dd && doc.kind !== 'doc' ? doc.title : m.title, date: (dd && dd.date) || m.date || (rel && rel.date) || (m.kind === 'reply' ? E.dstr(addDays(1)) : ''), time: (dd && dd.time) || m.time || (!m.date && rel && rel.time) || '',
           imp: Math.max(m.imp, dd ? dd.imp : 0), cat: 'Mail',
-          notes: [`Mail de ${m.from} : ${m.subject}`, doc && !doc.none && `Pièce jointe ${doc.name} : ${doc.notes || doc.title}`, m.amount != null && `Montant dans le mail : ${eur(m.amount)}`].filter(Boolean).join('\n') }));
+          notes: [`Mail de ${m.from} : ${m.subject}`, rel && `Lié à : ${rel.title}`, m.url && `Lien : ${m.url}`, doc && !doc.none && `Pièce jointe ${doc.name} : ${doc.notes || doc.title}`, m.amount != null && `Montant dans le mail : ${eur(m.amount)}`].filter(Boolean).join('\n') }));
         dismissMail(m);
       };
       v.append(el('div', { class: 'alert', style: 'border-color:var(--acc2)' },
         el('div', { class: 't', text: '📧 ' + m.title }),
+        rel && el('div', { class: 'm', style: 'margin-bottom:8px', text: `🔗 Lié à ${rel.ev ? "l'événement" : 'ta tâche'} « ${rel.title.slice(0, 50)} » · ${dayLabel(rel.date)}${rel.time ? ' ' + rel.time : ''}` }),
         mailOverview(m),
         !(S.mailSum && S.mailSum[m.id] && S.mailSum[m.id].bullets) && el('div', { class: 'm', text: (m.date ? `Date repérée : ${dayLabel(m.date)}${m.time ? ' à ' + m.time : ''}${m.amount != null ? ' · ' + eur(m.amount) : ''} · ` : '') + m.snippet }),
         doc && !doc.none && el('div', { class: 'm', text: `📎 ${doc.name} : ${doc.title}${doc.date ? ' · ' + dayLabel(doc.date) + (doc.time ? ' ' + doc.time : '') : ''}${doc.amount != null ? ' · ' + eur(doc.amount) : ''}` }),
         doc && doc.none && el('div', { class: 'm', text: `📎 ${doc.name || 'pièce jointe'} : illisible ou sans date` }),
         el('div', { class: 'chips' },
           el('button', { class: 'chip p', onclick: add, text: '➕ Ajouter au planning' }),
+          m.url && el('a', { class: 'chip', href: m.url, target: '_blank', rel: 'noopener', style: 'text-decoration:none', text: '🔗 Ouvrir le lien' }),
           (m.atts || []).length > 0 && (!doc || doc.none) && el('button', { class: 'chip', onclick: async e => { e.target.textContent = 'Lecture…'; await readMailAtts(m, true); save(); render(); }, text: '📎 Lire la pièce jointe' }),
           el('button', { class: 'chip', onclick: () => dismissMail(m), text: 'Ignorer' }))));
     }
