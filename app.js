@@ -1,7 +1,7 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.10-14';
+  const VERSION = '2026.11.10-15';
   const API = 'https://second-cerveau-api.second-cerveau-api.workers.dev'; // ton serveur Cloudflare (adresse publique, sans secret)
   const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
@@ -273,6 +273,14 @@
     }
   }
   /* ---------- Assistant IA : il connaît tes tâches et ton agenda, et PROPOSE des actions que tu valides ---------- */
+  /* Brouillon de mail : ouvre l'app Gmail (lien googlegmail://) ; Mail d'Apple en secours si Gmail n'est pas installé */
+  function mailButtons(to, subject, body) {
+    const q = 'subject=' + encodeURIComponent(subject || '') + '&body=' + encodeURIComponent(body || '');
+    const gm = 'googlegmail:///co?to=' + encodeURIComponent(to || '') + '&' + q;
+    const std = 'mailto:' + encodeURIComponent(to || '').replace('%40', '@') + '?' + q;
+    return [el('a', { class: 'chip p', href: gm, style: 'text-decoration:none', text: '✉️ Ouvrir dans Gmail' }),
+      el('a', { class: 'chip', href: std, style: 'text-decoration:none', text: 'Mail d’Apple' })];
+  }
   let aiBusy = false;
   const aiReady = () => !!(S.aiOn && S.srvToken && navigator.onLine !== false);
   function aiContext() {
@@ -711,9 +719,8 @@
           if (a.id && !it) return;
           if ((m.prop.doneIdx || []).includes(k)) { row.append(el('span', { class: 'hint', text: '✅ Fait' })); return; }
           if (a.type === 'mail') {
-            const href = 'mailto:' + encodeURIComponent(a.to || '').replace('%40', '@') + '?subject=' + encodeURIComponent(a.subject || '') + '&body=' + encodeURIComponent(a.body);
             b.append(el('div', { class: 'hint', style: 'white-space:pre-wrap;margin-top:8px', text: (a.subject ? 'Objet : ' + a.subject + '\n\n' : '') + a.body }));
-            row.append(el('a', { class: 'chip p', href, style: 'text-decoration:none', text: '✉️ Ouvrir dans Mail (tu relis et tu envoies)' }));
+            row.append(...mailButtons(a.to, a.subject, a.body));
             return;
           }
           const label = a.type === 'add' ? `➕ ${a.title}${a.date ? ' · ' + dayLabel(a.date) + (a.time ? ' ' + a.time : '') : ''}`
@@ -728,8 +735,7 @@
           m.prop.added ? el('span', { class: 'hint', text: '✅ Ajouté à ton planning' })
             : el('button', { class: 'chip p', onclick: () => { S.items.unshift(mk({ title: m.prop.title, date: m.prop.date, time: m.prop.time, imp: m.prop.imp, notes: m.prop.notes, cat: m.prop.cat })); m.prop.added = true; save(); render(); }, text: '➕ Ajouter au planning' })));
       } else if (m.prop && m.prop.type === 'mail') {
-        const href = 'mailto:' + encodeURIComponent(m.prop.to).replace('%40', '@') + '?subject=' + encodeURIComponent(m.prop.subject) + '&body=' + encodeURIComponent(m.prop.body);
-        b.append(el('div', { class: 'chips', style: 'margin-top:8px' }, el('a', { class: 'chip p', href, style: 'text-decoration:none', text: '✉️ Ouvrir dans Mail' })));
+        b.append(el('div', { class: 'chips', style: 'margin-top:8px' }, ...mailButtons(m.prop.to, m.prop.subject, m.prop.body)));
       }
       chat.append(b);
     }
