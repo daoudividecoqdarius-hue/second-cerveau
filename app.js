@@ -1,7 +1,7 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.10-11';
+  const VERSION = '2026.11.10-12';
   const API = 'https://second-cerveau-api.second-cerveau-api.workers.dev'; // ton serveur Cloudflare (adresse publique, sans secret)
   const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
@@ -428,6 +428,25 @@
                 : mk({ title: 'Document reçu (illisible, à regarder)', cat: 'Document', imp: 2 }));
               continue;
             }
+            let raw = (m.text || '').replace(/^﻿/, '').trim();
+            if (/^BEGIN:VCARD/i.test(raw)) {                          // fiche contact partagée
+              const g = re => ((raw.match(re) || [])[1] || '').trim();
+              const nm = g(/^FN[^:\n]*:(.+)$/mi) || g(/^N[^:\n]*:(.+)$/mi).replace(/;+/g, ' ').trim(), tel = g(/^TEL[^:\n]*:(.+)$/mi), em = g(/^EMAIL[^:\n]*:(.+)$/mi), org = g(/^ORG[^:\n]*:(.+)$/mi).replace(/;/g, ' ');
+              S.items.unshift(mk({ title: 'Contact : ' + (nm || 'sans nom'), notes: [org, tel && 'Tél : ' + tel, em && 'Mail : ' + em].filter(Boolean).join('\n'), cat: 'Contact', imp: 2 }));
+              continue;
+            }
+            if (/^BEGIN:VCALENDAR/i.test(raw)) {                      // événement de calendrier partagé
+              const g = re => ((raw.match(re) || [])[1] || '').trim(), d = g(/^DTSTART[^:\n]*:(\d{8})(?:T(\d{4}))?/mi), tt = (raw.match(/^DTSTART[^:\n]*:\d{8}T(\d{4})/mi) || [])[1] || '';
+              S.items.unshift(mk({ title: g(/^SUMMARY[^:\n]*:(.+)$/mi) || 'Événement reçu', date: d ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` : '', time: tt ? tt.slice(0, 2) + ':' + tt.slice(2) : '', notes: g(/^LOCATION[^:\n]*:(.+)$/mi), cat: 'Agenda', imp: 2 }));
+              continue;
+            }
+            if (/^https?:\/\/\S+$/i.test(raw)) {                       // lien seul (page, article, plan)
+              let host = raw; try { host = new URL(raw).hostname.replace(/^www\./, ''); } catch (e) {}
+              S.items.unshift(mk({ title: 'Lien : ' + host, notes: raw, cat: 'Lien', imp: 2 }));
+              continue;
+            }
+            if (/^\s*(<!doctype html|<html)/i.test(raw)) raw = raw.replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 4000);
+            m.text = raw;
             const p = E.parse(m.text), title = (p.title || m.text).split('\n')[0].slice(0, 120), ap = E.autoPrio(m.text);
             S.items.unshift(mk({ title, notes: (m.from ? 'De : ' + m.from + '\n' : '') + m.text, cat: 'Message', date: p.date || '', time: p.time || '', imp: p.imp === 3 ? 3 : (ap.sure ? ap.imp : 2) }));
           }
