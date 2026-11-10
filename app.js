@@ -1,7 +1,7 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.10-17';
+  const VERSION = '2026.11.10-18';
   const API = 'https://second-cerveau-api.second-cerveau-api.workers.dev'; // ton serveur Cloudflare (adresse publique, sans secret)
   const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
@@ -574,7 +574,7 @@
       S.srvSync = Date.now(); S.srvErr = '';
       try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {}
       if (ch) render();
-      autoReadAtts();
+      autoReadAtts(); autoSummaries();
     } catch (e) { S.srvErr = e.message; } finally { syncing = false; }
   }
   /* Pièces jointes : le serveur les transmet, c'est le téléphone qui les lit (rien n'est analysé ailleurs) */
@@ -609,6 +609,34 @@
       }
       if (ch) { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} render(); }
     } catch (e) {} finally { attBusy = false; }
+  }
+  /* « Aperçu IA » des mails : le serveur lit le mail, l'IA en fait 2-4 puces (gardées sur le téléphone) */
+  let sumBusy = false;
+  async function autoSummaries() {
+    if (sumBusy || !S.srvToken || !S.aiOn || !S.mailOn) return; sumBusy = true;
+    try {
+      S.mailSum = S.mailSum || {}; let ch = false;
+      for (const m of (S.mail || []).slice(0, 4)) {
+        const c = S.mailSum[m.id]; if (c && (c.bullets || Date.now() - c.ts < 10 * 60e3)) continue;
+        try { const r = await srv('/api/mail/summary', { id: m.id }); S.mailSum[m.id] = r.ok ? { bullets: r.bullets, todo: r.todo, date: r.date, ts: Date.now() } : { fail: r.reason, ts: Date.now() }; }
+        catch (e) { S.mailSum[m.id] = { fail: 'réseau', ts: Date.now() }; }
+        ch = true;
+      }
+      const ids = new Set((S.mail || []).map(x => x.id)); for (const k of Object.keys(S.mailSum)) if (!ids.has(k)) { delete S.mailSum[k]; ch = true; }
+      if (ch) { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} render(); }
+    } catch (e) {} finally { sumBusy = false; }
+  }
+  function mailOverview(m) {
+    const c = S.mailSum && S.mailSum[m.id];
+    if (!S.aiOn || !S.mailOn) return null;
+    if (!c) return el('div', { class: 'ov' }, el('div', { class: 'ovh' }, el('span', { text: '✨ Aperçu IA' })), el('div', { class: 'ovl', text: 'Lecture du mail…' }));
+    if (!c.bullets) return el('div', { class: 'ov' }, el('div', { class: 'ovh' }, el('span', { text: '✨ Aperçu IA' })),
+      el('div', { class: 'ovl', text: 'Aperçu indisponible pour le moment.' }),
+      el('button', { class: 'chip', type: 'button', text: '↻ Réessayer', onclick: () => { delete S.mailSum[m.id]; render(); autoSummaries(); } }));
+    return el('div', { class: 'ov' }, el('div', { class: 'ovh' }, el('span', { text: '✨ Aperçu IA' })),
+      el('ul', {}, ...c.bullets.map(b => el('li', { text: b }))),
+      c.todo && el('div', { class: 'ovt', text: '👉 ' + c.todo + (c.date ? ' · ' + dayLabel(c.date) : '') }),
+      el('div', { class: 'ovn', text: 'Résumé par Gemini, il peut contenir des erreurs.' }));
   }
   function dismissMail(m) {
     S.mail = (S.mail || []).filter(x => x.id !== m.id); S.mailSig = ''; if (S.mailDoc) delete S.mailDoc[m.id];
@@ -715,7 +743,8 @@
       };
       v.append(el('div', { class: 'alert', style: 'border-color:var(--acc2)' },
         el('div', { class: 't', text: '📧 ' + m.title }),
-        el('div', { class: 'm', text: (m.date ? `Date repérée : ${dayLabel(m.date)}${m.time ? ' à ' + m.time : ''}${m.amount != null ? ' · ' + eur(m.amount) : ''} · ` : '') + m.snippet }),
+        mailOverview(m),
+        !(S.mailSum && S.mailSum[m.id] && S.mailSum[m.id].bullets) && el('div', { class: 'm', text: (m.date ? `Date repérée : ${dayLabel(m.date)}${m.time ? ' à ' + m.time : ''}${m.amount != null ? ' · ' + eur(m.amount) : ''} · ` : '') + m.snippet }),
         doc && !doc.none && el('div', { class: 'm', text: `📎 ${doc.name} : ${doc.title}${doc.date ? ' · ' + dayLabel(doc.date) + (doc.time ? ' ' + doc.time : '') : ''}${doc.amount != null ? ' · ' + eur(doc.amount) : ''}` }),
         doc && doc.none && el('div', { class: 'm', text: `📎 ${doc.name || 'pièce jointe'} : illisible ou sans date` }),
         el('div', { class: 'chips' },

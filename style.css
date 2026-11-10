@@ -166,3 +166,14 @@ label input,label select{margin-top:5px;font-weight:400;font-size:17px}
 .actions .btn{flex:none}
 
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+
+/* Aperçu IA des mails (comme Gmail) */
+.ov{background:var(--fill);border-radius:14px;padding:12px 14px;margin:10px 0 12px}
+.ovh{font-weight:600;font-size:14px;margin-bottom:6px;background:linear-gradient(90deg,var(--acc),var(--acc2));-webkit-background-clip:text;background-clip:text;color:transparent;display:inline-block}
+.ov ul{margin:0;padding-left:20px;font-size:15px;line-height:1.4}
+.ov li{margin:3px 0}
+.ovt{margin-top:8px;font-weight:600;font-size:15px}
+.ovn{margin-top:8px;color:var(--mut);font-size:12px}
+.ovl{color:var(--mut);font-size:14px;margin-bottom:6px}
+.ovl:only-of-type{animation:ovp 1.4s ease-in-out infinite}
+@keyframes ovp{50%{opacity:.45}}
