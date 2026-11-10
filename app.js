@@ -1,7 +1,7 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.10-16';
+  const VERSION = '2026.11.10-17';
   const API = 'https://second-cerveau-api.second-cerveau-api.workers.dev'; // ton serveur Cloudflare (adresse publique, sans secret)
   const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
@@ -281,7 +281,8 @@
     return [el('a', { class: 'chip p', href: gm, style: 'text-decoration:none', text: '✉️ Ouvrir dans Gmail' }),
       el('a', { class: 'chip', href: std, style: 'text-decoration:none', text: 'Mail d’Apple' })];
   }
-  let aiBusy = false;
+  /* ---------- Assistant IA façon chat : texte en flux, mise en forme, actions que TU valides ---------- */
+  let aiBusy = false, aiCtl = null, chatDraft = '';
   const aiReady = () => !!(S.aiOn && S.srvToken && navigator.onLine !== false);
   function aiContext() {
     const td = today(), lim = E.dstr(addDays(21));
@@ -289,39 +290,101 @@
     const ideas = open().filter(i => !i.date).slice(0, 10).map(i => ({ id: i.id, t: i.title.slice(0, 90), idea: true }));
     const evs = visibleEvents().filter(e => e.date >= td && e.date <= lim).sort(byTime).slice(0, 40).map(e => ({ t: e.title.slice(0, 90), d: e.date, h: e.time }));
     const mails = (S.mail || []).slice(0, 5).map(m => ({ t: (m.title || '').slice(0, 90), d: m.date || '' }));
-    return { items: [...dated, ...ideas], events: evs, mails };
+    return { items: [...dated, ...ideas], events: evs, mails, memoire: (S.mem || []).slice(0, 40) };
   }
-  async function aiChat(text) {
-    const url = (text.match(/https?:\/\/[^\s<>"')]+/) || [])[0];
-    let page = null, msg = text;
-    if (url) {                                                       // lecture de la page que TU as envoyée
-      try { const p = await srv('/api/web', { url }); if (p.ok) page = p; else say('Je n’ai pas pu ouvrir cette page (' + p.reason + ').', true); } catch (e) {}
-      if (text.replace(url, '').trim().length < 3) msg = 'Résume cette page en quelques phrases et dis-moi s’il y a des dates ou des choses à faire.';
+  const nearBottom = () => window.innerHeight + window.scrollY >= document.body.scrollHeight - 240;
+  /* Mini-rendu Markdown sûr : tout le texte est échappé avant la mise en forme */
+  function md(src) {
+    const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const inl = s => esc(s).replace(/`([^`\n]+)`/g, '<code>$1</code>').replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s).,;:!?]|$)/g, '$1<em>$2</em>').replace(/(^|[\s(])_([^_\n]+)_(?=[\s).,;:!?]|$)/g, '$1<em>$2</em>')
+      .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    const out = []; let list = null, para = [], tbl = [];
+    const endPara = () => { if (para.length) { out.push('<p>' + para.join('<br>') + '</p>'); para = []; } };
+    const endList = () => { if (list) { out.push('</' + list + '>'); list = null; } };
+    const endTbl = () => {
+      if (!tbl.length) return;
+      const rows = tbl.filter(r => !/^\s*\|[\s:|-]+\|\s*$/.test(r)).map(r => r.trim().replace(/^\||\|$/g, '').split('|').map(c => inl(c.trim())));
+      if (rows.length) out.push('<div class="tw"><table>' + rows.map((r, i) => '<tr>' + r.map(c => (i ? '<td>' : '<th>') + c + (i ? '</td>' : '</th>')).join('') + '</tr>').join('') + '</table></div>');
+      tbl = [];
+    };
+    for (const raw of String(src).split('\n')) {
+      const ln = raw.replace(/\s+$/, ''); let m;
+      if (/^\s*\|.*\|\s*$/.test(ln)) { endPara(); endList(); tbl.push(ln); continue; }
+      endTbl();
+      if (!ln.trim()) { endPara(); continue; }
+      if ((m = ln.match(/^\s{0,3}#{1,4}\s+(.*)$/))) { endPara(); endList(); out.push('<h4>' + inl(m[1]) + '</h4>'); continue; }
+      if ((m = ln.match(/^\s*[-*•]\s+(.*)$/))) { endPara(); if (list !== 'ul') { endList(); out.push('<ul>'); list = 'ul'; } out.push('<li>' + inl(m[1]) + '</li>'); continue; }
+      if ((m = ln.match(/^\s*\d+[.)]\s+(.*)$/))) { endPara(); if (list !== 'ol') { endList(); out.push('<ol>'); list = 'ol'; } out.push('<li>' + inl(m[1]) + '</li>'); continue; }
+      if (/^\s*[-*_]{3,}\s*$/.test(ln)) { endPara(); endList(); out.push('<hr>'); continue; }
+      endList(); para.push(inl(ln.trim()));
     }
-    const history = S.chat.filter(m => !m.tmp).slice(-8, -1).map(m => ({ r: m.r, t: m.t }));
-    return srv('/api/ai/chat', { message: msg, history, context: aiContext(), page });
+    endPara(); endList(); endTbl();
+    return out.join('');
+  }
+  function paint(m) {                                              // met à jour la bulle en direct sans tout redessiner (ta saisie reste intacte)
+    const n = document.querySelector('[data-mid="' + m.id + '"]'); if (!n) return;
+    const stick = nearBottom(), t = n.querySelector('.mt');
+    if (t) t.innerHTML = m.t ? md(m.t) : '<span class="dots"><i></i><i></i><i></i></span>';
+    let s = n.querySelector('.st');
+    if (m.status) { if (!s) { s = el('div', { class: 'st' }); n.append(s); } s.textContent = m.status; } else if (s) s.remove();
+    if (stick) window.scrollTo(0, document.body.scrollHeight);
+  }
+  async function aiStream(text) {
+    const m = { r: 'a', t: '', ts: Date.now(), id: 'm' + Date.now().toString(36), ai: true, stream: true };
+    S.chat.push(m); aiBusy = true; const ctl = new AbortController(); aiCtl = ctl; render();
+    try {
+      let page = null, msg = text;
+      const url = (text.match(/https?:\/\/[^\s<>"')]+/) || [])[0];
+      if (url) {                                                   // lecture de la page que TU as envoyée
+        m.status = '🌐 Je lis la page…'; paint(m);
+        try { const p = await srv('/api/web', { url }); if (p.ok) page = p; else m.t += '_Je n’ai pas pu ouvrir cette page (' + p.reason + ')._\n\n'; } catch (e) {}
+        if (text.replace(url, '').trim().length < 3) msg = 'Résume cette page en quelques phrases et dis-moi s’il y a des dates ou des choses à faire.';
+      }
+      const history = S.chat.filter(x => x !== m && x.t && !x.err).slice(0, -1).slice(-10).map(x => ({ r: x.r, t: x.t }));
+      const res = await fetch(API + '/api/ai/stream', { method: 'POST', headers: { Authorization: 'Bearer ' + S.srvToken, 'Content-Type': 'application/json' }, signal: ctl.signal,
+        body: JSON.stringify({ message: msg, history, context: aiContext(), page }) });
+      if (!res.ok) throw new Error('Serveur ' + res.status);
+      if (!(res.headers.get('Content-Type') || '').includes('ndjson')) { const j = await res.json().catch(() => ({})); throw new Error(j.reason === 'no-key' ? 'IA non configurée sur le serveur' : 'IA indisponible'); }
+      m.status = ''; paint(m);
+      const rd = res.body.getReader(), dec = new TextDecoder(); let buf = '', fin = false;
+      for (;;) {
+        const { done, value } = await rd.read(); if (done) break;
+        buf += dec.decode(value, { stream: true }); let i;
+        while ((i = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (!line) continue;
+          let ev; try { ev = JSON.parse(line); } catch (e) { continue; }
+          if (ev.t) { m.t += ev.t; m.status = ''; paint(m); }
+          else if (ev.tool) { m.status = '🌤️ Je consulte la météo…'; paint(m); }
+          else if (ev.error) throw new Error(ev.error);
+          else if (ev.done) { fin = true; if (ev.actions && ev.actions.length) m.prop = { type: 'ai', actions: ev.actions }; }
+        }
+      }
+      if (!fin && !m.t.trim()) throw new Error('réponse vide');
+    } catch (e) {
+      if (e.name === 'AbortError') { if (m.t.trim()) m.t += '\n\n_(arrêté)_'; else S.chat = S.chat.filter(x => x !== m); }
+      else { m.err = /failed to fetch|load failed|network/i.test(e.message) ? 'Pas de connexion internet' : e.message; m.retry = text; }
+    } finally { m.stream = false; aiBusy = false; aiCtl = null; save(); render(); }
   }
   function applyAction(a) {
-    if (a.type === 'add') { S.items.unshift(mk({ title: a.title, date: a.date, time: a.time, imp: a.importance, cat: 'Autre' })); return; }
+    if (a.type === 'add') { S.items.unshift(mk({ title: a.title, date: a.date, time: a.time, imp: a.importance, notes: a.notes || '', cat: a.notes ? 'Note' : 'Autre' })); return; }
+    if (a.type === 'remember') { S.mem = [...new Set([...(S.mem || []), a.text])].slice(-40); return; }
     const it = S.items.find(i => i.id === a.id); if (!it) return;
     if (a.type === 'done') complete(it);
     else if (a.type === 'move') { it.date = a.date; it.time = a.time || ''; it.lastNotified = Date.now(); it.alertOpen = false; it.snoozeUntil = 0; }
   }
   function ask(text) {
-    text = text.trim(); if (!text) return;
+    text = text.trim(); if (!text || aiBusy) return;
     S.chat.push({ r: 'u', t: text, ts: Date.now() });
     const ai = aiReady(), fallback = SKILLS.find(s => s.id === 'ajouter');
     const sk = enabled().find(s => s.id !== 'ajouter' && s.match(text) && !(ai && s.id === 'mail'));
-    const runSkill = s => { let r; try { r = s.run(text); } catch (e) { r = "Oups, j'ai eu un souci : " + e.message; } if (r && typeof r === 'object') say(r.text, false, r.prop); else say(r); };
-    if (sk || !ai) { runSkill(sk || fallback); save(); render(); return; }
-    const tmp = { r: 'a', t: '💭 Je réfléchis…', ts: Date.now(), tmp: true }; S.chat.push(tmp); aiBusy = true; render();
-    aiChat(text).then(r => {
-      S.chat = S.chat.filter(m => m !== tmp); aiBusy = false;
-      if (r && r.ok) say(r.reply, false, r.actions && r.actions.length ? { type: 'ai', actions: r.actions } : undefined);
-      else { say('⚠️ L’IA ne répond pas pour l’instant (' + ((r && r.reason) || 'erreur') + '). Je fais au plus simple.', true); runSkill(fallback); }
-      save(); render();
-    }).catch(e => { S.chat = S.chat.filter(m => m !== tmp); aiBusy = false; say('⚠️ Pas de connexion avec le serveur. Je fais au plus simple.', true); runSkill(fallback); save(); render(); });
+    if (ai && !(sk && text.length <= 70)) { aiStream(text); return; }     // phrases libres ou longues : l'IA ; commandes courtes connues : réponse instantanée
+    const s = sk || fallback; let r;
+    try { r = s.run(text); } catch (e) { r = "Oups, j'ai eu un souci : " + e.message; }
+    if (r && typeof r === 'object') say(r.text, false, r.prop); else say(r);
+    save(); render();
   }
+
 
   /* ---------- Documents : PDF et photos, lus sur le téléphone ---------- */
   const loadedLibs = {};
@@ -705,59 +768,77 @@
   let view_q = '';
 
   let rec = null;
-  function renderChat(v) {
-    v.append(el('div', { class: 'top' }, el('div', {}, el('div', { class: 'date', text: 'Gratuit · fonctionne hors ligne' }), el('h1', { text: 'Assistant 💬' }))));
-    const chat = el('div', { class: 'chat' });
-    if (!S.chat.length) S.chat.push({ r: 'a', t: "Salut ! Je suis ton second cerveau. Écris ou dis-moi ce que tu dois faire (« Rappelle-moi de… »), ou touche une compétence ci-dessous.", ts: Date.now() });
-    for (const m of S.chat) {
-      if (m.tmp && !aiBusy) continue;
-      const b = el('div', { class: 'msg ' + m.r, text: m.t });
-      if (m.prop && m.prop.type === 'ai') {                            // actions proposées par l'IA : rien ne se fait sans ton bouton
-        const row = el('div', { class: 'chips', style: 'margin-top:8px' });
-        (m.prop.actions || []).forEach((a, k) => {
-          const it = a.id ? S.items.find(i => i.id === a.id) : null;
-          if (a.id && !it) return;
-          if ((m.prop.doneIdx || []).includes(k)) { row.append(el('span', { class: 'hint', text: '✅ Fait' })); return; }
-          if (a.type === 'mail') {
-            b.append(el('div', { class: 'hint', style: 'white-space:pre-wrap;margin-top:8px', text: (a.subject ? 'Objet : ' + a.subject + '\n\n' : '') + a.body }));
-            row.append(...mailButtons(a.to, a.subject, a.body));
-            return;
-          }
-          if (['search', 'maps', 'open', 'call', 'sms'].includes(a.type)) {              // boutons qui ouvrent une page ou une app : tu vois où ça mène avant de toucher
-            const enc = encodeURIComponent;
-            let label = '', href = '';
-            if (a.type === 'search') {
-              const where = { web: ['Google', 'https://www.google.com/search?q='], amazon: ['Amazon', 'https://www.amazon.fr/s?k='], fnac: ['Fnac', 'https://www.fnac.com/SearchResult/ResultList.aspx?Search='], maps: ['Plans', 'https://maps.apple.com/?q='] }[a.where] || ['Google', 'https://www.google.com/search?q='];
-              label = `🔎 « ${a.query.slice(0, 32)} » sur ${where[0]}`; href = where[1] + enc(a.query);
-            } else if (a.type === 'maps') { label = `🗺️ Itinéraire vers ${a.to.slice(0, 30)}`; href = 'https://maps.apple.com/?dirflg=r&daddr=' + enc(a.to) + (a.from ? '&saddr=' + enc(a.from) : ''); }
-            else if (a.type === 'open') { let h = a.url; try { h = new URL(a.url).hostname.replace(/^www\./, ''); } catch (e) {} label = `🔗 ${a.label ? a.label.slice(0, 28) + ' · ' : ''}${h}`; href = a.url; }
-            else if (a.type === 'call') { label = `📞 Appeler ${a.number}`; href = 'tel:' + a.number.replace(/[^\d+]/g, ''); }
-            else { b.append(el('div', { class: 'hint', style: 'white-space:pre-wrap;margin-top:8px', text: 'SMS' + (a.to ? ' à ' + a.to : '') + ' :\n' + a.body })); label = '💬 Ouvrir le SMS'; href = 'sms:' + (a.to || '').replace(/[^\d+]/g, '') + '&body=' + enc(a.body); }
-            row.append(el('a', { class: 'chip p', href, target: a.type === 'sms' || a.type === 'call' ? undefined : '_blank', rel: 'noopener', style: 'text-decoration:none', text: label }));
-            return;
-          }
-          const label = a.type === 'add' ? `➕ ${a.title}${a.date ? ' · ' + dayLabel(a.date) + (a.time ? ' ' + a.time : '') : ''}`
-            : a.type === 'done' ? `✅ Terminer « ${it.title.slice(0, 40)} »` : `📅 Déplacer « ${it.title.slice(0, 30)} » → ${dayLabel(a.date)}${a.time ? ' ' + a.time : ''}`;
-          row.append(el('button', { class: 'chip p', onclick: () => { applyAction(a); (m.prop.doneIdx = m.prop.doneIdx || []).push(k); save(); render(); }, text: label }));
-        });
-        if (row.childNodes.length) b.append(row);
-        chat.append(b); continue;
+  function newChat() { if (aiCtl) aiCtl.abort(); S.chat = []; chatDraft = ''; save(); render(); }
+  /* Boutons proposés par l'IA sous une bulle : rien ne se fait sans que tu touches */
+  function renderActions(b, m) {
+    const row = el('div', { class: 'chips', style: 'margin-top:10px' });
+    (m.prop.actions || []).forEach((a, k) => {
+      const it = a.id ? S.items.find(i => i.id === a.id) : null;
+      if (a.id && !it) return;
+      if ((m.prop.doneIdx || []).includes(k)) { row.append(el('span', { class: 'hint', text: '✅ Fait' })); return; }
+      if (a.type === 'mail') {
+        b.append(el('div', { class: 'hint', style: 'white-space:pre-wrap;margin-top:8px', text: (a.subject ? 'Objet : ' + a.subject + '\n\n' : '') + a.body }));
+        row.append(...mailButtons(a.to, a.subject, a.body)); return;
       }
-      if (m.prop && m.prop.type === 'task') {
+      if (['search', 'maps', 'open', 'call', 'sms'].includes(a.type)) {              // ouvre une page ou une app : tu vois où ça mène avant de toucher
+        const enc = encodeURIComponent; let label = '', href = '';
+        if (a.type === 'search') {
+          const where = { web: ['Google', 'https://www.google.com/search?q='], amazon: ['Amazon', 'https://www.amazon.fr/s?k='], fnac: ['Fnac', 'https://www.fnac.com/SearchResult/ResultList.aspx?Search='], maps: ['Plans', 'https://maps.apple.com/?q='] }[a.where] || ['Google', 'https://www.google.com/search?q='];
+          label = `🔎 « ${a.query.slice(0, 32)} » sur ${where[0]}`; href = where[1] + enc(a.query);
+        } else if (a.type === 'maps') { label = `🗺️ Itinéraire vers ${a.to.slice(0, 30)}`; href = 'https://maps.apple.com/?dirflg=r&daddr=' + enc(a.to) + (a.from ? '&saddr=' + enc(a.from) : ''); }
+        else if (a.type === 'open') { let h = a.url; try { h = new URL(a.url).hostname.replace(/^www\./, ''); } catch (e) {} label = `🔗 ${a.label ? a.label.slice(0, 28) + ' · ' : ''}${h}`; href = a.url; }
+        else if (a.type === 'call') { label = `📞 Appeler ${a.number}`; href = 'tel:' + a.number.replace(/[^\d+]/g, ''); }
+        else { b.append(el('div', { class: 'hint', style: 'white-space:pre-wrap;margin-top:8px', text: 'SMS' + (a.to ? ' à ' + a.to : '') + ' :\n' + a.body })); label = '💬 Ouvrir le SMS'; href = 'sms:' + (a.to || '').replace(/[^\d+]/g, '') + '&body=' + enc(a.body); }
+        row.append(el('a', { class: 'chip', href, target: a.type === 'sms' || a.type === 'call' ? undefined : '_blank', rel: 'noopener', style: 'text-decoration:none', text: label })); return;
+      }
+      const label = a.type === 'add' ? `➕ ${a.title}${a.date ? ' · ' + dayLabel(a.date) + (a.time ? ' ' + a.time : '') : ''}${a.notes ? ' 📝' : ''}`
+        : a.type === 'remember' ? `🧠 Retenir : ${a.text.slice(0, 40)}`
+        : a.type === 'done' ? `✅ Terminer « ${it.title.slice(0, 40)} »` : `📅 Déplacer « ${it.title.slice(0, 30)} » → ${dayLabel(a.date)}${a.time ? ' ' + a.time : ''}`;
+      row.append(el('button', { class: 'chip p', onclick: () => { applyAction(a); (m.prop.doneIdx = m.prop.doneIdx || []).push(k); save(); render(); }, text: label }));
+    });
+    if (row.childNodes.length) b.append(row);
+  }
+  function renderChat(v) {
+    v.append(el('div', { class: 'top' }, el('div', {}, el('div', { class: 'date', text: aiReady() ? 'IA activée' : 'Mode simple' }), el('h1', { text: 'Assistant' })),
+      S.chat.length > 1 && el('button', { class: 'chip', type: 'button', onclick: newChat, text: '✎ Nouveau' })));
+    const chat = el('div', { class: 'chat' });
+    if (!S.chat.length) S.chat.push({ r: 'a', t: "Salut ! Je suis ton second cerveau. Demande-moi ce que tu veux : planifier ta semaine, un menu, un mail, la météo… ou dis-moi simplement ce que tu dois faire.", ts: Date.now() });
+    for (const m of S.chat) {
+      const b = el('div', { class: 'msg ' + m.r, 'data-mid': m.id });
+      const t = el('div', { class: 'mt' });
+      if (m.r === 'a') { if (m.t) t.innerHTML = md(m.t); else if (m.stream) t.innerHTML = '<span class="dots"><i></i><i></i><i></i></span>'; } else t.textContent = m.t;
+      b.append(t);
+      if (m.stream && m.status) b.append(el('div', { class: 'st', text: m.status }));
+      if (m.err) b.append(el('div', { class: 'err', text: '⚠️ ' + m.err }), el('div', { class: 'chips', style: 'margin-top:8px' },
+        el('button', { class: 'chip p', type: 'button', text: '↻ Réessayer', onclick: () => { S.chat = S.chat.filter(x => x !== m); aiStream(m.retry); } })));
+      if (m.prop && m.prop.type === 'ai') renderActions(b, m);
+      else if (m.prop && m.prop.type === 'task') {
         b.append(el('div', { class: 'chips', style: 'margin-top:8px' },
           m.prop.added ? el('span', { class: 'hint', text: '✅ Ajouté à ton planning' })
             : el('button', { class: 'chip p', onclick: () => { S.items.unshift(mk({ title: m.prop.title, date: m.prop.date, time: m.prop.time, imp: m.prop.imp, notes: m.prop.notes, cat: m.prop.cat })); m.prop.added = true; save(); render(); }, text: '➕ Ajouter au planning' })));
       } else if (m.prop && m.prop.type === 'mail') {
         b.append(el('div', { class: 'chips', style: 'margin-top:8px' }, ...mailButtons(m.prop.to, m.prop.subject, m.prop.body)));
       }
+      if (m.ai && !m.stream && m.t && m.t.length > 160) b.append(el('button', { class: 'cp', type: 'button', text: 'Copier', onclick: e => {
+        const btn = e.target; const done = () => { btn.textContent = 'Copié ✓'; setTimeout(() => { btn.textContent = 'Copier'; }, 1500); };
+        try { navigator.clipboard.writeText(m.t).then(done, done); } catch (x) { done(); } } }));
       chat.append(b);
     }
     v.append(chat);
+    const input = el('textarea', { id: 'chatin', rows: '1', placeholder: 'Écris ou parle…', enterkeyhint: 'send', autocapitalize: 'sentences' });
+    input.value = chatDraft;
+    const grow = () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 130) + 'px'; };
+    if (S.chat.length <= 1 && aiReady()) {                                                // idées pour démarrer
+      const sg = el('div', { class: 'sugg' });
+      for (const [ic, t, q] of [['📅', 'Planifie ma semaine', 'Aide-moi à planifier ma semaine à partir de mes tâches et de mon agenda.'], ['🥗', 'Menu et courses', 'Prépare-moi un menu sain pour la semaine et la liste de courses.'],
+        ['✉️', 'Écrire un mail', 'Aide-moi à écrire un mail pour demander un délai à un professeur.'], ['🌤️', 'Météo demain', 'Quel temps fera-t-il demain à Paris ?']])
+        sg.append(el('button', { class: 'sg', type: 'button', onclick: () => ask(q) }, el('span', { text: ic }), el('b', { text: t })));
+      v.append(sg);
+    }
     const sk = el('div', { class: 'skills' });
-    for (const s of enabled().filter(x => !x.hidden)) sk.append(el('button', { class: 'chip', onclick: () => { input.value = s.ex; input.focus(); }, text: `${s.icon} ${s.name}` }));
+    for (const s of enabled().filter(x => !x.hidden)) sk.append(el('button', { class: 'chip', type: 'button', onclick: () => { input.value = s.ex; chatDraft = s.ex; grow(); input.focus(); }, text: `${s.icon} ${s.name}` }));
     v.append(sk);
-    const input = el('input', { type: 'text', placeholder: 'Écris ou parle…', id: 'chatin' });
-    const send = () => { const t = input.value; input.value = ''; ask(t); };
+    const send = () => { if (aiBusy) return; const t = input.value; if (!t.trim()) return; input.value = ''; chatDraft = ''; grow(); ask(t); };
     const mic = el('button', { class: 'mic', type: 'button', 'aria-label': 'Parler', text: '🎤' });
     mic.onclick = () => {
       const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -769,13 +850,17 @@
       rec.onerror = () => { rec = null; mic.classList.remove('rec'); say("Le micro n'est pas accessible ici. Utilise le micro du clavier iPhone 🎤 (en bas à droite du clavier).", true); render(); };
       mic.classList.add('rec'); try { rec.start(); } catch (e) {}
     };
-    input.onkeydown = e => { if (e.key === 'Enter') send(); };
+    input.oninput = () => { chatDraft = input.value; grow(); };
+    input.onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } };
     const fileIn = el('input', { type: 'file', accept: 'application/pdf,image/*', id: 'filein', style: 'display:none' });
     fileIn.onchange = () => { const f = fileIn.files[0]; if (f) handleFile(f); };
     const clip = el('button', { class: 'mic', type: 'button', 'aria-label': 'Ajouter un document', text: '📎', onclick: () => fileIn.click() });
-    v.append(el('div', { class: 'composer' }, clip, mic, input, el('button', { class: 'send', type: 'button', onclick: send, 'aria-label': 'Envoyer', text: '➤' })));
-    setTimeout(() => window.scrollTo(0, document.body.scrollHeight), 0);
+    const sendBtn = aiBusy ? el('button', { class: 'send stop', type: 'button', 'aria-label': 'Arrêter', text: '■', onclick: () => { if (aiCtl) aiCtl.abort(); } })
+      : el('button', { class: 'send', type: 'button', onclick: send, 'aria-label': 'Envoyer', text: '↑' });
+    v.append(el('div', { class: 'composer' }, clip, mic, input, sendBtn));
+    setTimeout(() => { grow(); window.scrollTo(0, document.body.scrollHeight); }, 0);
   }
+
 
   async function updateApp(force) {
     const m = $('#upmsg'), say2 = t => { if (m) m.textContent = t; };
@@ -801,6 +886,9 @@
         el('button', { class: 'chip p', onclick: () => updateApp(false), text: 'Mettre à jour' }),
         el('button', { class: 'chip', onclick: () => updateApp(true), text: 'Forcer la réinstallation' })),
       el('p', { class: 'hint', id: 'upmsg', text: '' })));
+    v.append(el('div', { class: 'card' }, el('h3', { text: '🧠 Ce que je sais de toi' }),
+      el('p', { text: (S.mem || []).length ? 'Je m’en sers pour mieux t’aider (ces notes sont envoyées à l’IA avec tes questions). Touche une note pour l’oublier.' : 'Rien pour l’instant. Dis par exemple « je suis végétarien » à l’assistant : il te proposera de le retenir.' }),
+      el('div', { class: 'chips' }, ...(S.mem || []).map((t, i) => el('button', { class: 'chip', type: 'button', onclick: () => { S.mem.splice(i, 1); save(); render(); }, text: t.slice(0, 44) + ' ✕' })))));
     v.append(el('div', { class: 'card' }, el('h3', { text: '☁️ Serveur & rappels app fermée' }),
       el('p', { text: S.srvToken ? `Serveur appairé${S.srvSync ? ' · dernière synchro ' + rel(S.srvSync) : ''}. Il t'envoie tes rappels même quand l'app est fermée et lit ton planning de l'école.${S.srvErr ? ' (dernière erreur : ' + S.srvErr + ')' : ''}` : "Pas encore appairé. Colle ci-dessous le code d'appairage que ton assistant t'a envoyé." }),
       !S.srvToken && el('div', { class: 'inline', style: 'margin-bottom:10px' },
