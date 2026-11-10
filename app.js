@@ -1,7 +1,7 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.10-9';
+  const VERSION = '2026.11.10-10';
   const API = 'https://second-cerveau-api.second-cerveau-api.workers.dev'; // ton serveur Cloudflare (adresse publique, sans secret)
   const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
@@ -707,6 +707,19 @@
         S.mailOn && el('button', { class: 'chip', onclick: async () => { try { await srv('/api/google/disconnect', {}); S.mail = []; S.mailOn = false; S.mailSig = ''; save(); render(); } catch (e) {} }, text: 'Déconnecter Gmail' })),
       el('p', { class: 'hint', id: 'mailmsg', text: '' }),
       el('p', { class: 'hint', text: "Mails de l'école : transfère-les vers ton Gmail (Paramètres → Transfert dans la boîte de l'école), je les verrai alors comme les autres." })));
+    v.append(el('div', { class: 'card' }, el('h3', { text: '📥 Envoyer un message vers l\'app' }),
+      el('p', { text: "Depuis WhatsApp, Instagram, Messages… : « Partager » → ton Raccourci « Vers Second Cerveau ». Le message arrive ici sans être marqué comme lu. Ce code ne peut qu'ajouter des messages, jamais lire tes données." }),
+      el('div', { class: 'chips' }, el('button', { class: 'chip', disabled: !S.srvToken, onclick: async () => {
+        const n = $('#capmsg'); if (!S.srvToken) return;
+        try {
+          const c = await srv('/api/capture-token');
+          $('#capurl').value = c.url; $('#captok').value = c.token; $('#capbox').hidden = false;
+          try { await navigator.clipboard.writeText(c.token); n.textContent = 'Code copié. Appuie longuement sur un champ pour copier l\'adresse.'; } catch (e) { n.textContent = 'Appuie longuement sur un champ pour le copier.'; }
+        } catch (e) { n.textContent = 'Impossible de récupérer le code (' + e.message + ').'; }
+      }, text: 'Afficher / copier le code du Raccourci' })),
+      el('div', { id: 'capbox', hidden: true },
+        el('input', { type: 'text', id: 'capurl', readonly: true }), el('input', { type: 'text', id: 'captok', readonly: true })),
+      el('p', { class: 'hint', id: 'capmsg', text: '' })));
     const perm = ('Notification' in window) ? Notification.permission : 'indisponible';
     v.append(el('div', { class: 'card' }, el('h3', { text: '🔔 Rappels' }),
       el('p', { text: `État : ${perm === 'granted' ? 'activés' : perm === 'denied' ? 'refusés (à changer dans les réglages iPhone)' : perm === 'default' ? 'pas encore activés' : 'non disponibles ici'}. Les rappels adaptent leur rythme à ta réactivité : réactivité apprise ×${S.rf.toFixed(2)} (${S.rf > 1.15 ? 'rappels plus tôt et plus fréquents' : S.rf < 0.85 ? 'rappels plus discrets' : 'rythme standard'}).` }),
