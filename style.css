@@ -98,6 +98,7 @@ label input,label select{margin-top:4px;font-weight:400}
 .card{background:var(--card);border:1px solid var(--bd);border-radius:18px;padding:14px;margin-bottom:10px;box-shadow:var(--shadow)}
 .card h3{margin:0 0 4px;font-size:16px}
 .card p{margin:4px 0 10px;color:var(--mut);font-size:14px}
+.card p.hint{white-space:pre-line;margin:10px 0 0}
 .tog{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--bd)}
 .tog:first-of-type{border-top:0}
 .tog input{width:22px;height:22px;accent-color:var(--acc);flex:none}

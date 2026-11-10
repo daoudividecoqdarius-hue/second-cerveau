@@ -1,7 +1,7 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.10-3';
+  const VERSION = '2026.11.10-4';
   const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
   const $ = s => document.querySelector(s);
@@ -312,26 +312,37 @@
   async function fetchEvents() {
     gmsg('Chargement de ton agenda…');
     try {
-      const min = addDays(0), max = addDays(14);
-      const cals = (await gapi('https://www.googleapis.com/calendar/v3/users/me/calendarList')).items || [];
-      const out = [];
+      const min = addDays(0), max = addDays(30);
+      const cals = (await gapi('https://www.googleapis.com/calendar/v3/users/me/calendarList?showHidden=true&minAccessRole=reader&maxResults=250')).items || [];
+      const prim = cals.find(c => c.primary), acct = prim ? prim.id : 'compte';
+      const out = [], report = [];
       for (const c of cals) {
-        const q = new URLSearchParams({ timeMin: min.toISOString(), timeMax: max.toISOString(), singleEvents: 'true', orderBy: 'startTime', maxResults: '100' });
-        const d = await gapi(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(c.id)}/events?${q}`);
-        for (const e of d.items || []) {
-          if (e.status === 'cancelled' || !e.start) continue;
-          const s = e.start.dateTime ? new Date(e.start.dateTime) : null;
-          out.push({ id: 'g' + c.id + e.id, title: e.summary || '(sans titre)', date: s ? E.dstr(s) : e.start.date, time: s ? E.hm(s) : '', cat: 'Agenda', ro: true, cal: c.summaryOverride || c.summary, done: false });
+        let n = 0, token = '';
+        for (let page = 0; page < 3; page++) {
+          const q = new URLSearchParams({ timeMin: min.toISOString(), timeMax: max.toISOString(), singleEvents: 'true', orderBy: 'startTime', maxResults: '250' });
+          if (token) q.set('pageToken', token);
+          const d = await gapi(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(c.id)}/events?${q}`);
+          for (const e of d.items || []) {
+            if (e.status === 'cancelled' || !e.start) continue;
+            const s = e.start.dateTime ? new Date(e.start.dateTime) : null;
+            out.push({ id: 'g' + c.id + e.id, title: e.summary || '(sans titre)', date: s ? E.dstr(s) : e.start.date, time: s ? E.hm(s) : '', cat: 'Agenda', ro: true, cal: c.summaryOverride || c.summary, acct, done: false });
+            n++;
+          }
+          token = d.nextPageToken || ''; if (!token) break;
         }
+        report.push({ name: c.summaryOverride || c.summary, n, hidden: !!c.hidden || c.selected === false });
       }
-      S.events = out; save(); gmsg(`${out.length} événement(s) sur 14 jours.`); render();
+      S.events = S.events.filter(e => e.acct !== acct).concat(out);
+      S.gacc = { ...(S.gacc || {}), [acct]: { ts: Date.now(), cals: report } };
+      S.gsync = Date.now(); save();
+      gmsg(`${acct} : ${cals.length} agenda(s), ${out.length} événement(s) sur 30 jours.`); render();
     } catch (e) { gmsg('Échec : ' + e.message); }
   }
-  async function connectGoogle() {
+  async function connectGoogle(another) {
     if (!S.gclient) { gmsg("Colle d'abord ton ID client Google ci-dessus."); return; }
     try { await loadGis(); } catch (e) { gmsg('Impossible de joindre Google (internet ?).'); return; }
     google.accounts.oauth2.initTokenClient({
-      client_id: S.gclient, scope: 'https://www.googleapis.com/auth/calendar.readonly',
+      client_id: S.gclient, scope: 'https://www.googleapis.com/auth/calendar.readonly', prompt: another ? 'select_account' : '',
       callback: r => { if (r.access_token) { gtoken = r.access_token; fetchEvents(); } else gmsg('Connexion refusée.'); },
       error_callback: () => gmsg('Connexion annulée.')
     }).requestAccessToken();
@@ -359,6 +370,9 @@
       el('div', {}, el('div', { class: 'date', text: new Date().toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' }) }),
         el('h1', { text: h < 6 ? 'Bonne nuit 🌙' : h < 18 ? 'Bonjour 👋' : 'Bonsoir 🌆' }))));
 
+    if (S.gacc && Object.keys(S.gacc).length && Date.now() - (S.gsync || 0) > 45 * 60e3) {
+      v.append(el('button', { class: 'chip', style: 'margin-bottom:12px', onclick: () => connectGoogle(false), text: `🔄 Actualiser l'agenda (dernière synchro ${rel(S.gsync || 0)})` }));
+    }
     const all = [...open().filter(i => i.date), ...S.events.filter(e => e.date >= td)];
     const upcoming = all.filter(i => E.dueAt(i) >= now - 30 * 60e3 || isLate(i)).sort((a, b) => (isLate(b) - isLate(a)) || byTime(a, b));
     const nxt = upcoming.find(i => !i.ro && isLate(i)) || upcoming.find(i => E.dueAt(i) >= now - 30 * 60e3);
@@ -512,9 +526,12 @@
     v.append(el('div', { class: 'card' }, el('h3', { text: '📅 Google Agenda' }),
       el('p', { text: 'Lecture seule : ton agenda de cours s’affiche avec tes tâches.' }), cid,
       el('div', { class: 'chips', style: 'margin-top:10px' },
-        el('button', { class: 'chip', onclick: () => { S.gclient = cid.value.trim(); save(); gmsg('ID enregistré.'); }, text: 'Enregistrer l’ID' }),
-        el('button', { class: 'chip p', onclick: () => { S.gclient = cid.value.trim(); save(); connectGoogle(); }, text: 'Connecter' })),
-      el('p', { id: 'gmsg', class: 'hint', text: S.events.length ? `${S.events.length} événement(s) en mémoire.` : '' })));
+        el('button', { class: 'chip p', onclick: () => { S.gclient = cid.value.trim(); save(); connectGoogle(false); }, text: 'Actualiser / Connecter' }),
+        el('button', { class: 'chip', onclick: () => { S.gclient = cid.value.trim(); save(); connectGoogle(true); }, text: '+ Autre compte (école…)' }),
+        el('button', { class: 'chip', onclick: () => { S.events = []; S.gacc = {}; S.gsync = 0; save(); render(); }, text: 'Déconnecter' })),
+      el('p', { id: 'gmsg', class: 'hint', text: S.events.length ? `${S.events.length} événement(s) en mémoire.` : '' }),
+      ...Object.entries(S.gacc || {}).map(([a, d]) => el('p', { class: 'hint' }, `📧 ${a} — ${rel(d.ts)}`, el('br'), d.cals.map(c => `${c.hidden ? '🙈 ' : '• '}${c.name} (${c.n})`).join('\n'))),
+      el('p', { class: 'hint', text: "Si l'agenda de ton école n'apparaît pas dans cette liste, il appartient à un autre compte (utilise « + Autre compte ») ou n'est pas partagé avec ce compte." })));
 
     const box = el('textarea', { rows: 3, id: 'backup', placeholder: 'Ta sauvegarde apparaît ici. Pour restaurer : colle-la ici puis touche « Restaurer ».' });
     const bmsg = el('p', { class: 'hint', text: '' });
