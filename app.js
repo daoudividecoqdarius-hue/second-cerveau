@@ -1,7 +1,7 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.10-20';
+  const VERSION = '2026.11.10-21';
   const API = 'https://second-cerveau-api.second-cerveau-api.workers.dev'; // ton serveur Cloudflare (adresse publique, sans secret)
   const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
@@ -753,7 +753,10 @@
         S.items.unshift(mk({ title: dd && doc.kind !== 'doc' ? doc.title : m.title, date: (dd && dd.date) || m.date || (rel && rel.date) || (m.kind === 'reply' ? E.dstr(addDays(1)) : ''), time: (dd && dd.time) || m.time || (!m.date && rel && rel.time) || '',
           imp: Math.max(m.imp, dd ? dd.imp : 0), cat: 'Mail',
           notes: [`Mail de ${m.from} : ${m.subject}`, rel && `Lié à : ${rel.title}`, m.url && `Lien : ${m.url}`,
-          sum && sum.bullets && '✨ Aperçu IA :\n' + sum.bullets.map(x => '• ' + x).join('\n') + (sum.todo ? '\n👉 ' + sum.todo : ''), doc && !doc.none && `Pièce jointe ${doc.name} : ${doc.notes || doc.title}`, m.amount != null && `Montant dans le mail : ${eur(m.amount)}`].filter(Boolean).join('\n') }));
+          sum && sum.bullets && '✨ Aperçu IA :\n' + sum.bullets.map(x => '• ' + x).join('\n') + (sum.todo ? '\n👉 ' + sum.todo : ''),
+          doc && !doc.none && `📎 Pièce jointe « ${doc.name} » : ${doc.title}${doc.date ? '\nDate : ' + dayLabel(doc.date) + (doc.time ? ' ' + doc.time : '') : ''}${doc.amount != null ? '\nMontant : ' + eur(doc.amount) : ''}${doc.notes && doc.notes !== doc.title ? '\n' + doc.notes : ''}`,
+          (!doc || doc.none) && (m.atts || []).length > 0 && `📎 Pièce(s) jointe(s) : ${m.atts.map(x => x.name).join(', ')} (à ouvrir dans Gmail)`,
+          m.amount != null && `Montant dans le mail : ${eur(m.amount)}`].filter(Boolean).join('\n') }));
         dismissMail(m);
       };
       v.append(el('div', { class: 'alert', style: 'border-color:var(--acc2)' },
