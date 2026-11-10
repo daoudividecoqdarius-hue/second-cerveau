@@ -1,7 +1,8 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.10-2';
+  const VERSION = '2026.11.10-3';
+  const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
   const $ = s => document.querySelector(s);
   function el(tag, props = {}, ...kids) {
@@ -21,6 +22,7 @@
   let S = { items: [], events: [], rf: 1, chat: [], lastDigest: '', tts: false, off: [], gclient: '', migrated: false };
   function load() {
     try { const j = JSON.parse(localStorage.getItem(KEY)); if (j) S = { ...S, ...j }; } catch (e) {}
+    if (!S.gclient) S.gclient = DEFAULT_GCLIENT;
     try {
       if (!S.migrated) {
         const old = JSON.parse(localStorage.getItem('orga.tasks.v1') || '[]');
