@@ -1,7 +1,7 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.10-21';
+  const VERSION = '2026.11.10-22';
   const API = 'https://second-cerveau-api.second-cerveau-api.workers.dev'; // ton serveur Cloudflare (adresse publique, sans secret)
   const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
@@ -355,7 +355,7 @@
           const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (!line) continue;
           let ev; try { ev = JSON.parse(line); } catch (e) { continue; }
           if (ev.t) { m.t += ev.t; m.status = ''; paint(m); }
-          else if (ev.tool) { m.status = '🌤️ Je consulte la météo…'; paint(m); }
+          else if (ev.tool) { m.status = ev.tool === 'mail' ? '📬 Je cherche dans tes mails…' : '🌤️ Je consulte la météo…'; paint(m); }
           else if (ev.error) throw new Error(ev.error);
           else if (ev.done) { fin = true; if (ev.actions && ev.actions.length) m.prop = { type: 'ai', actions: ev.actions }; }
         }
@@ -368,6 +368,7 @@
   }
   function applyAction(a) {
     if (a.type === 'add') { S.items.unshift(mk({ title: a.title, date: a.date, time: a.time, imp: a.importance, notes: a.notes || '', cat: a.notes ? 'Note' : 'Autre' })); return; }
+    if (a.type === 'note') { const t = S.items.find(i => i.id === a.id); if (t) t.notes = ((t.notes || '') ? t.notes + '\n\n' : '') + a.text; return; }
     if (a.type === 'remember') { S.mem = [...new Set([...(S.mem || []), a.text])].slice(-40); return; }
     const it = S.items.find(i => i.id === a.id); if (!it) return;
     if (a.type === 'done') complete(it);
@@ -825,6 +826,7 @@
       const it = a.id ? S.items.find(i => i.id === a.id) : null;
       if (a.id && !it) return;
       if ((m.prop.doneIdx || []).includes(k)) { row.append(el('span', { class: 'hint', text: '✅ Fait' })); return; }
+      if (a.type === 'note') b.append(el('div', { class: 'hint', style: 'white-space:pre-wrap;margin-top:8px', text: 'Texte ajouté : ' + a.text }));
       if (a.type === 'mail') {
         b.append(el('div', { class: 'hint', style: 'white-space:pre-wrap;margin-top:8px', text: (a.subject ? 'Objet : ' + a.subject + '\n\n' : '') + a.body }));
         row.append(...mailButtons(a.to, a.subject, a.body)); return;
@@ -842,6 +844,7 @@
       }
       const label = a.type === 'add' ? `➕ ${a.title}${a.date ? ' · ' + dayLabel(a.date) + (a.time ? ' ' + a.time : '') : ''}${a.notes ? ' 📝' : ''}`
         : a.type === 'remember' ? `🧠 Retenir : ${a.text.slice(0, 40)}`
+        : a.type === 'note' ? `📝 Ajouter aux notes de « ${it.title.slice(0, 28)} »`
         : a.type === 'done' ? `✅ Terminer « ${it.title.slice(0, 40)} »` : `📅 Déplacer « ${it.title.slice(0, 30)} » → ${dayLabel(a.date)}${a.time ? ' ' + a.time : ''}`;
       row.append(el('button', { class: 'chip p', onclick: () => { applyAction(a); (m.prop.doneIdx = m.prop.doneIdx || []).push(k); save(); render(); }, text: label }));
     });
