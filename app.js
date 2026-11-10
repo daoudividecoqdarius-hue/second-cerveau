@@ -1,7 +1,7 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.10-15';
+  const VERSION = '2026.11.10-16';
   const API = 'https://second-cerveau-api.second-cerveau-api.workers.dev'; // ton serveur Cloudflare (adresse publique, sans secret)
   const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
@@ -132,7 +132,7 @@
   const SKILLS = [
     { id: 'aide', icon: '❓', name: 'Aide', desc: 'Liste ce que je sais faire', ex: "Que sais-tu faire ?",
       match: t => /(?:que sais[- ]tu|tes (?:skills|comp[ée]tences|capacit[ée]s)|^aide$|^help$)/i.test(t),
-      run: () => 'Voici mes compétences :\n' + SKILLS.filter(s => s.id !== 'ajouter').map(s => `${s.icon} ${s.name} : ${s.desc}\n   ex : « ${s.ex} »`).join('\n') + '\n\nSinon, écris simplement ce que tu veux retenir, je m’en occupe.' },
+      run: () => 'Voici mes compétences :\n' + SKILLS.filter(s => s.id !== 'ajouter').map(s => `${s.icon} ${s.name} : ${s.desc}\n   ex : « ${s.ex} »`).join('\n') + (S.aiOn ? '\n\n🤖 Avec l’IA, je comprends aussi les phrases libres : météo, itinéraires, recherche d’un produit (Amazon, Fnac…), brouillons de mail ou de SMS, lecture d’un lien, résumé de ta semaine, déplacer ou terminer une tâche. Je prépare tout, mais c’est toi qui valides, qui paies et qui envoies : je ne passe jamais de commande ni de paiement à ta place.' : '') + '\n\nSinon, écris simplement ce que tu veux retenir, je m’en occupe.' },
     { id: 'priorite', icon: '⭐', name: 'Priorités', desc: "Je décide de l'importance, tu corriges", ex: 'Ignore Veterans Day',
       match: t => /^(?:ignore|masque|cache)\s+\S/i.test(t) || /\b(?:est|c['’]est)\s+(?:vraiment\s+)?(?:important|prioritaire|urgent)\b/i.test(t) || /\b(?:pas|plus)\s+(?:important|urgent|prioritaire)\b/i.test(t) || /^(?:qu['’]est[- ]ce qui est|c['’]est quoi)\s+(?:le plus\s+)?(?:important|prioritaire|urgent)/i.test(t),
       run: t => {
@@ -721,6 +721,19 @@
           if (a.type === 'mail') {
             b.append(el('div', { class: 'hint', style: 'white-space:pre-wrap;margin-top:8px', text: (a.subject ? 'Objet : ' + a.subject + '\n\n' : '') + a.body }));
             row.append(...mailButtons(a.to, a.subject, a.body));
+            return;
+          }
+          if (['search', 'maps', 'open', 'call', 'sms'].includes(a.type)) {              // boutons qui ouvrent une page ou une app : tu vois où ça mène avant de toucher
+            const enc = encodeURIComponent;
+            let label = '', href = '';
+            if (a.type === 'search') {
+              const where = { web: ['Google', 'https://www.google.com/search?q='], amazon: ['Amazon', 'https://www.amazon.fr/s?k='], fnac: ['Fnac', 'https://www.fnac.com/SearchResult/ResultList.aspx?Search='], maps: ['Plans', 'https://maps.apple.com/?q='] }[a.where] || ['Google', 'https://www.google.com/search?q='];
+              label = `🔎 « ${a.query.slice(0, 32)} » sur ${where[0]}`; href = where[1] + enc(a.query);
+            } else if (a.type === 'maps') { label = `🗺️ Itinéraire vers ${a.to.slice(0, 30)}`; href = 'https://maps.apple.com/?dirflg=r&daddr=' + enc(a.to) + (a.from ? '&saddr=' + enc(a.from) : ''); }
+            else if (a.type === 'open') { let h = a.url; try { h = new URL(a.url).hostname.replace(/^www\./, ''); } catch (e) {} label = `🔗 ${a.label ? a.label.slice(0, 28) + ' · ' : ''}${h}`; href = a.url; }
+            else if (a.type === 'call') { label = `📞 Appeler ${a.number}`; href = 'tel:' + a.number.replace(/[^\d+]/g, ''); }
+            else { b.append(el('div', { class: 'hint', style: 'white-space:pre-wrap;margin-top:8px', text: 'SMS' + (a.to ? ' à ' + a.to : '') + ' :\n' + a.body })); label = '💬 Ouvrir le SMS'; href = 'sms:' + (a.to || '').replace(/[^\d+]/g, '') + '&body=' + enc(a.body); }
+            row.append(el('a', { class: 'chip p', href, target: a.type === 'sms' || a.type === 'call' ? undefined : '_blank', rel: 'noopener', style: 'text-decoration:none', text: label }));
             return;
           }
           const label = a.type === 'add' ? `➕ ${a.title}${a.date ? ' · ' + dayLabel(a.date) + (a.time ? ' ' + a.time : '') : ''}`

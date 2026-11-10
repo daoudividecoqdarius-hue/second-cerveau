@@ -6,7 +6,8 @@ self.addEventListener('activate', e => {
 });
 self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
-  e.respondWith(fetch(e.request).then(r => { const c = r.clone(); caches.open(C).then(x => x.put(e.request, c)).catch(() => {}); return r; }).catch(() => caches.match(e.request)));
+  const same = new URL(e.request.url).origin === self.location.origin;     // nos propres fichiers : on revalide toujours (sinon le navigateur peut garder l'ancien style ~10 min)
+  e.respondWith(fetch(same ? new Request(e.request, { cache: 'no-cache' }) : e.request).then(r => { const c = r.clone(); caches.open(C).then(x => x.put(e.request, c)).catch(() => {}); return r; }).catch(() => caches.match(e.request)));
 });
 /* Notifications envoyées par le serveur, même app fermée */
 const API = 'https://second-cerveau-api.second-cerveau-api.workers.dev';
