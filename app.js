@@ -1,7 +1,7 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.10-8';
+  const VERSION = '2026.11.10-9';
   const API = 'https://second-cerveau-api.second-cerveau-api.workers.dev'; // ton serveur Cloudflare (adresse publique, sans secret)
   const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
@@ -410,6 +410,16 @@
       const ev = await srv('/api/events');
       const mapped = (ev.events || []).map(e => ({ id: 's' + e.id, title: e.title, date: e.date, time: e.time, endTime: e.endTime, loc: e.loc, cat: 'Cours', ro: true, cal: 'ESSEC', acct: 'ecole', done: false }));
       if (JSON.stringify(mapped) !== JSON.stringify(S.events.filter(e => e.acct === 'ecole'))) { S.events = S.events.filter(e => e.acct !== 'ecole').concat(mapped); ch = true; }
+      try {                                                           // messages envoyés depuis le Raccourci iPhone
+        const ib = (await srv('/api/inbox')).list || [];
+        if (ib.length) {
+          for (const m of ib) {
+            const p = E.parse(m.text), title = (p.title || m.text).split('\n')[0].slice(0, 120), ap = E.autoPrio(m.text);
+            S.items.unshift(mk({ title, notes: (m.from ? 'De : ' + m.from + '\n' : '') + m.text, cat: 'Message', date: p.date || '', time: p.time || '', imp: p.imp === 3 ? 3 : (ap.sure ? ap.imp : 2) }));
+          }
+          await srv('/api/inbox/ack', { ids: ib.map(m => m.id) }); ch = true;
+        }
+      } catch (e) {}
       try {                                                           // mails repérés par le serveur
         const ml = await srv('/api/mail/suggestions'), sig = JSON.stringify([ml.list, ml.connected, ml.error, ml.secretSet]);
         if (sig !== S.mailSig) { S.mail = ml.list; S.mailOn = ml.connected; S.mailErr = ml.error; S.mailSecret = ml.secretSet; S.mailSig = sig; ch = true; }
