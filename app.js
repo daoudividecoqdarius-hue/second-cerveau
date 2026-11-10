@@ -201,6 +201,15 @@
         S.items.unshift(mk({ title: txt[0].toUpperCase() + txt.slice(1), cat: 'Idée' })); save(); render();
         return `💭 Retenu : « ${txt} ». Je te le ressortirai demain, puis dans 3 jours, 1 semaine, 1 mois… tant que tu veux le garder.`;
       } },
+    { id: 'mail', icon: '✉️', name: 'Écrire un mail', desc: 'Prépare un brouillon dans ton app Mail (tu envoies toi-même)', ex: 'Écris un mail à prof@univ.fr pour demander un délai',
+      match: t => /^(?:[ée]cris|r[ée]dige|pr[ée]pare|envoie)(?:[- ]moi)?\s+(?:un\s+)?(?:mail|e-?mail|message)/i.test(t),
+      run: t => {
+        const to = (t.match(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/) || [''])[0];
+        let sub = t.replace(/^(?:[ée]cris|r[ée]dige|pr[ée]pare|envoie)(?:[- ]moi)?\s+(?:un\s+)?(?:mail|e-?mail|message)\s*/i, '').replace(to, '').replace(/^\s*(?:à|a)\s+/i, '').replace(/^\s*(?:pour|afin de|au sujet de|à propos de|concernant)\s+/i, '').trim();
+        sub = sub[0] ? sub[0].toUpperCase() + sub.slice(1) : 'Question';
+        const body = `Bonjour,\n\nJe vous écris pour : ${sub.charAt(0).toLowerCase() + sub.slice(1)}.\n\nMerci d’avance pour votre retour.\n\nCordialement,`;
+        return { text: `✉️ Brouillon prêt${to ? ' pour ' + to : ''} :\n\nObjet : ${sub}\n\n${body}\n\nTouche le bouton pour l'ouvrir dans Mail : tu pourras le modifier et c'est toi qui envoies.`, prop: { type: 'mail', to, subject: sub, body } };
+      } },
     { id: 'ajouter', icon: '➕', name: 'Rappels', desc: 'Écris en français normal, je comprends la date', ex: 'Rappelle-moi de rendre le dossier vendredi à 14h', hidden: true,
       match: () => true,
       run: t => {
@@ -214,8 +223,8 @@
   ];
   const enabled = () => SKILLS.filter(s => !S.off.includes(s.id));
 
-  function say(text, fromSystem) {
-    S.chat.push({ r: 'a', t: text, ts: Date.now() }); S.chat = S.chat.slice(-60);
+  function say(text, fromSystem, prop) {
+    S.chat.push({ r: 'a', t: text, ts: Date.now(), prop }); S.chat = S.chat.slice(-60);
     if (S.tts && !fromSystem && 'speechSynthesis' in window) {
       try { const u = new SpeechSynthesisUtterance(text.replace(/[•📅⚠️💭✅🎯🧭]/gu, '')); u.lang = 'fr-FR'; speechSynthesis.cancel(); speechSynthesis.speak(u); } catch (e) {}
     }
@@ -225,7 +234,62 @@
     S.chat.push({ r: 'u', t: text, ts: Date.now() });
     const sk = enabled().find(s => s.match(text)) || SKILLS.find(s => s.id === 'ajouter');
     let r; try { r = sk.run(text); } catch (e) { r = "Oups, j'ai eu un souci : " + e.message; }
-    say(r); save(); render();
+    if (r && typeof r === 'object') say(r.text, false, r.prop); else say(r);
+    save(); render();
+  }
+
+  /* ---------- Documents : PDF et photos, lus sur le téléphone ---------- */
+  const loadedLibs = {};
+  function loadScript(url) {
+    if (!loadedLibs[url]) loadedLibs[url] = new Promise((ok, ko) => { const s = document.createElement('script'); s.src = url; s.onload = ok; s.onerror = () => ko(new Error('Chargement impossible (internet ?)')); document.head.appendChild(s); });
+    return loadedLibs[url];
+  }
+  const PDFJS = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/';
+  const TESS = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
+  async function ocr(source) {
+    await loadScript(TESS);
+    const r = await Tesseract.recognize(source, 'fra');
+    return r.data.text || '';
+  }
+  async function readFile(file) {
+    if (file.type === 'application/pdf' || /\.pdf$/i.test(file.name)) {
+      await loadScript(PDFJS + 'pdf.min.js');
+      pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS + 'pdf.worker.min.js';
+      const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
+      let txt = '';
+      const n = Math.min(pdf.numPages, 8);
+      for (let p = 1; p <= n; p++) {
+        const c = await (await pdf.getPage(p)).getTextContent();
+        txt += c.items.map(i => i.str + (i.hasEOL ? '\n' : ' ')).join('') + '\n';
+      }
+      if (txt.replace(/\s/g, '').length < 40) {            // PDF scanné : on lit l'image
+        say('Ce PDF est une image, je le lis comme une photo (ça peut prendre une minute)…', true); render();
+        txt = '';
+        for (let p = 1; p <= Math.min(n, 3); p++) {
+          const page = await pdf.getPage(p), vp = page.getViewport({ scale: 2 });
+          const cv = document.createElement('canvas'); cv.width = vp.width; cv.height = vp.height;
+          await page.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise;
+          txt += await ocr(cv) + '\n';
+        }
+      }
+      return txt;
+    }
+    if (/^image\//.test(file.type)) { say('Je lis la photo (ça peut prendre une minute)…', true); render(); return ocr(file); }
+    throw new Error('Format non géré (PDF ou photo seulement).');
+  }
+  async function handleFile(file) {
+    S.chat.push({ r: 'u', t: '📎 ' + file.name, ts: Date.now() });
+    say('Je lis le document sur ton téléphone, rien n’est envoyé sur internet (sauf le chargement des outils de lecture).', true); render();
+    try {
+      const txt = await readFile(file);
+      if (txt.replace(/\s/g, '').length < 15) { say("Je n'ai pas réussi à lire de texte. Essaie une photo plus nette, bien éclairée.", true); save(); render(); return; }
+      const d = E.extractDoc(txt);
+      const kinds = { train: '🚆 Billet de train', facture: '🧾 Facture', rdv: '📌 Convocation / rendez-vous', doc: '📄 Document' };
+      const lines2 = [`${kinds[d.kind]} — voici ce que j'ai trouvé :`, `• ${d.title}`, d.date ? `• Date : ${dayLabel(d.date)}${d.time ? ' à ' + d.time : ''}` : '• Aucune date trouvée', d.notes && '• ' + d.notes].filter(Boolean);
+      if (d.dates.length > 1) lines2.push('Autres dates vues : ' + d.dates.slice(1).map(dayLabel).join(', '));
+      say(lines2.join('\n'), true, { type: 'task', title: d.title, date: d.date || '', time: d.time || '', imp: d.imp, notes: d.notes, cat: d.kind === 'facture' || d.kind === 'rdv' ? 'Admin' : 'Autre' });
+    } catch (e) { say('Je n’ai pas pu lire ce document : ' + e.message, true); }
+    save(); render();
   }
 
   /* ================= Google Agenda (lecture seule) ================= */
@@ -363,7 +427,18 @@
     v.append(el('div', { class: 'top' }, el('div', {}, el('div', { class: 'date', text: 'Gratuit · fonctionne hors ligne' }), el('h1', { text: 'Assistant 💬' }))));
     const chat = el('div', { class: 'chat' });
     if (!S.chat.length) S.chat.push({ r: 'a', t: "Salut ! Je suis ton second cerveau. Écris ou dis-moi ce que tu dois faire (« Rappelle-moi de… »), ou touche une compétence ci-dessous.", ts: Date.now() });
-    for (const m of S.chat) chat.append(el('div', { class: 'msg ' + m.r, text: m.t }));
+    for (const m of S.chat) {
+      const b = el('div', { class: 'msg ' + m.r, text: m.t });
+      if (m.prop && m.prop.type === 'task') {
+        b.append(el('div', { class: 'chips', style: 'margin-top:8px' },
+          m.prop.added ? el('span', { class: 'hint', text: '✅ Ajouté à ton planning' })
+            : el('button', { class: 'chip p', onclick: () => { S.items.unshift(mk({ title: m.prop.title, date: m.prop.date, time: m.prop.time, imp: m.prop.imp, notes: m.prop.notes, cat: m.prop.cat })); m.prop.added = true; save(); render(); }, text: '➕ Ajouter au planning' })));
+      } else if (m.prop && m.prop.type === 'mail') {
+        const href = 'mailto:' + encodeURIComponent(m.prop.to).replace('%40', '@') + '?subject=' + encodeURIComponent(m.prop.subject) + '&body=' + encodeURIComponent(m.prop.body);
+        b.append(el('div', { class: 'chips', style: 'margin-top:8px' }, el('a', { class: 'chip p', href, style: 'text-decoration:none', text: '✉️ Ouvrir dans Mail' })));
+      }
+      chat.append(b);
+    }
     v.append(chat);
     const sk = el('div', { class: 'skills' });
     for (const s of enabled().filter(x => !x.hidden)) sk.append(el('button', { class: 'chip', onclick: () => { input.value = s.ex; input.focus(); }, text: `${s.icon} ${s.name}` }));
@@ -382,7 +457,10 @@
       mic.classList.add('rec'); try { rec.start(); } catch (e) {}
     };
     input.onkeydown = e => { if (e.key === 'Enter') send(); };
-    v.append(el('div', { class: 'composer' }, mic, input, el('button', { class: 'send', type: 'button', onclick: send, 'aria-label': 'Envoyer', text: '➤' })));
+    const fileIn = el('input', { type: 'file', accept: 'application/pdf,image/*', id: 'filein', style: 'display:none' });
+    fileIn.onchange = () => { const f = fileIn.files[0]; if (f) handleFile(f); };
+    const clip = el('button', { class: 'mic', type: 'button', 'aria-label': 'Ajouter un document', text: '📎', onclick: () => fileIn.click() });
+    v.append(el('div', { class: 'composer' }, clip, mic, input, el('button', { class: 'send', type: 'button', onclick: send, 'aria-label': 'Envoyer', text: '➤' })));
     setTimeout(() => window.scrollTo(0, document.body.scrollHeight), 0);
   }
 
@@ -479,5 +557,5 @@
   document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
   setInterval(tick, 30000);
   tick(); render();
-  window.__app = { get S() { return S; }, ask, render, tick, mk, setView: v => { view = v; render(); } }; // utile pour les tests
+  window.__app = { get S() { return S; }, ask, handleFile, render, tick, mk, setView: v => { view = v; render(); } }; // utile pour les tests
 })();

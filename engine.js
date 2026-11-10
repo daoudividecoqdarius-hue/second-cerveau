@@ -153,6 +153,56 @@
     return n;
   }
 
-  const api = { dueAt, quiet, reminderPlan, shouldAlert, nextReminderAt, adjustRf, nextReview, reviewDue, parse, score, words, dstr, hm, pad, norm, REVIEW_DAYS, DAYS };
+  /* ---------- Lecture de documents (billets, factures, convocations) ---------- */
+  const MONTH_RE = MONTHS_ALT.join('|');
+  const isoOk = (y, m, d) => { const t = new Date(y, m - 1, d); return t.getFullYear() === y && t.getMonth() === m - 1 && t.getDate() === d; };
+  function findDates(text, now) {
+    const out = []; let m;
+    const re1 = /(?<!\d)(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4}|\d{2})(?!\d)/g;
+    while ((m = re1.exec(text))) {
+      let y = +m[3]; if (y < 100) y += 2000;
+      if (isoOk(y, +m[2], +m[1])) out.push({ iso: `${y}-${pad(+m[2])}-${pad(+m[1])}`, idx: m.index });
+    }
+    const re2 = new RegExp(`(?<!\\d)(\\d{1,2})(?:er)?\\s+(${MONTH_RE})\\.?(?:,?\\s+(\\d{4}))?`, 'gi');
+    while ((m = re2.exec(text))) {
+      const mon = MONTHS.indexOf(norm(m[2])) + 1; let y = m[3] ? +m[3] : now.getFullYear();
+      if (!m[3] && new Date(y, mon - 1, +m[1]) < new Date(now.getFullYear(), now.getMonth(), now.getDate())) y++;
+      if (isoOk(y, mon, +m[1])) out.push({ iso: `${y}-${pad(mon)}-${pad(+m[1])}`, idx: m.index });
+    }
+    return out.sort((a, b) => a.idx - b.idx);
+  }
+  function extractDoc(raw, now = new Date()) {
+    const text = String(raw).replace(/[ \t ]+/g, ' ');
+    const low = norm(text), todayIso = dstr(now);
+    let kind = 'doc';
+    if (/\b(sncf|tgv|ouigo|inoui|intercites|billet|voiture\s*\d|train)\b/.test(low)) kind = 'train';
+    else if (/\b(facture|echeance|montant|ttc|a payer|avis d'?imposition)\b/.test(low)) kind = 'facture';
+    else if (/\b(convocation|rendez-vous|rdv|examen|partiel|entretien|inscription)\b/.test(low)) kind = 'rdv';
+    const dates = findDates(text, now), future = dates.filter(d => d.iso >= todayIso);
+    const tm = (from = 0) => { const r = /(?<![\d:])([01]?\d|2[0-3])\s*(?:h|:)\s*([0-5]\d)(?!\d)/g; r.lastIndex = from; const x = r.exec(text); return x ? `${pad(+x[1])}:${x[2]}` : ''; };
+    const amts = []; const ra = /(\d{1,3}(?:[ .]\d{3})*[.,]\d{2}|\d+[.,]\d{2}|\d+)\s*(?:€|eur)/gi; let a;
+    while ((a = ra.exec(text))) amts.push({ v: parseFloat(a[1].replace(/[ .](?=\d{3})/g, '').replace(',', '.')), idx: a.index });
+    let amount = null;
+    const tk = low.search(/(net a payer|total ttc|total|montant)/);
+    if (amts.length) amount = (tk >= 0 && amts.find(x => x.idx >= tk) || amts.reduce((p, c) => c.v > p.v ? c : p)).v;
+    const firstLine = (text.split('\n').map(s => s.trim()).find(s => s.length > 3) || '').slice(0, 60);
+    let date = null, time = '', title = firstLine || 'Document', imp = 2;
+    if (kind === 'train') {
+      date = (future[0] || dates[0] || {}).iso || null;
+      const dp = low.search(/depart/); time = tm(dp >= 0 ? dp : 0);
+      const r = text.match(/([A-ZÀ-Ý][A-Za-zÀ-ÿ' -]{2,25}?)\s*(?:→|->|>|›|vers)\s*([A-ZÀ-Ý][A-Za-zÀ-ÿ' -]{2,25})/);
+      title = r ? `Train ${r[1].trim()} → ${r[2].trim()}` : 'Billet de train';
+    } else if (kind === 'facture') {
+      const kw = low.search(/(echeance|avant le|date limite|payable|a regler|a payer avant)/);
+      const d = kw >= 0 ? future.find(x => x.idx >= kw && x.idx - kw < 80) : null;
+      date = (d || future[0] || {}).iso || null; imp = 3;
+      title = 'Payer la facture' + (amount != null ? ` (${amount.toFixed(2).replace('.', ',')} €)` : '') + (firstLine ? ` – ${firstLine.slice(0, 30)}` : '');
+    } else if (kind === 'rdv') {
+      date = (future[0] || dates[0] || {}).iso || null; time = tm(); title = firstLine || 'Rendez-vous';
+    } else { date = (future[0] || {}).iso || null; time = tm(); }
+    return { kind, title, date, time, amount, imp, dates: future.map(d => d.iso).slice(0, 5), notes: amount != null ? `Montant : ${amount.toFixed(2).replace('.', ',')} €` : '' };
+  }
+
+  const api = { extractDoc, findDates, dueAt, quiet, reminderPlan, shouldAlert, nextReminderAt, adjustRf, nextReview, reviewDue, parse, score, words, dstr, hm, pad, norm, REVIEW_DAYS, DAYS };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.Engine = api;
 })(typeof self !== 'undefined' ? self : this);
