@@ -1,7 +1,7 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.10-10';
+  const VERSION = '2026.11.10-11';
   const API = 'https://second-cerveau-api.second-cerveau-api.workers.dev'; // ton serveur Cloudflare (adresse publique, sans secret)
   const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
@@ -414,6 +414,20 @@
         const ib = (await srv('/api/inbox')).list || [];
         if (ib.length) {
           for (const m of ib) {
+            if (m.file) {                                              // PDF / photo partagé : lu sur le téléphone
+              const ext = /pdf/.test(m.file.mime) ? 'pdf' : (m.file.mime.split('/')[1] || 'bin');
+              let d = null;
+              try {
+                const r = await fetch(`${API}/api/inbox/file?id=${encodeURIComponent(m.id)}`, { headers: { Authorization: 'Bearer ' + S.srvToken } });
+                if (!r.ok) throw new Error('fichier ' + r.status);
+                const txt = await readFile(new File([await r.blob()], 'partage.' + ext, { type: m.file.mime }), true);
+                if (txt.replace(/\s/g, '').length >= 15) d = E.extractDoc(txt);
+              } catch (e) {}
+              S.items.unshift(d
+                ? mk({ title: d.title, date: d.date || '', time: d.time || '', notes: d.notes || '', cat: d.kind === 'facture' || d.kind === 'rdv' ? 'Admin' : 'Document', imp: d.imp || 2 })
+                : mk({ title: 'Document reçu (illisible, à regarder)', cat: 'Document', imp: 2 }));
+              continue;
+            }
             const p = E.parse(m.text), title = (p.title || m.text).split('\n')[0].slice(0, 120), ap = E.autoPrio(m.text);
             S.items.unshift(mk({ title, notes: (m.from ? 'De : ' + m.from + '\n' : '') + m.text, cat: 'Message', date: p.date || '', time: p.time || '', imp: p.imp === 3 ? 3 : (ap.sure ? ap.imp : 2) }));
           }
