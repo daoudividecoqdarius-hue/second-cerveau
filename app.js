@@ -1,7 +1,7 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.10-7';
+  const VERSION = '2026.11.10-8';
   const API = 'https://second-cerveau-api.second-cerveau-api.workers.dev'; // ton serveur Cloudflare (adresse publique, sans secret)
   const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
@@ -575,7 +575,8 @@
     v.append(...section("Aujourd'hui", day(td)));
     const wk = []; for (let k = 1; k <= 7; k++) wk.push(...day(E.dstr(addDays(k))));
     v.append(...section('Cette semaine', wk));
-    const later = dated.filter(i => i.date > E.dstr(addDays(7)) && !isLate(i)).sort(byTime);
+    const lim = E.dstr(addDays(7));
+    const later = [...dated.filter(i => i.date > lim && !isLate(i)), ...evs.filter(e => e.date > lim)].sort(byTime).slice(0, 60);
     v.append(...section('Plus tard', later));
     v.append(...section('💭 À revoir', open().filter(i => E.reviewDue(i, now))));
     if (!S.items.length && !S.events.length) v.append(el('div', { class: 'empty', text: "Rien pour l'instant. Appuie sur + ou parle à l'assistant : « Rappelle-moi de… »" }));
