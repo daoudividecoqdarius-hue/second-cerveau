@@ -1,6 +1,7 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
+  const VERSION = '2026.11.10-2';
   const E = Engine, H = 3600e3, D = 24 * H;
   const $ = s => document.querySelector(s);
   function el(tag, props = {}, ...kids) {
@@ -464,8 +465,30 @@
     setTimeout(() => window.scrollTo(0, document.body.scrollHeight), 0);
   }
 
+  async function updateApp(force) {
+    const m = $('#upmsg'), say2 = t => { if (m) m.textContent = t; };
+    say2('Recherche de mise à jour…');
+    try {
+      const txt = await (await fetch('app.js', { cache: 'no-store' })).text();
+      const nv = (txt.match(/const VERSION = '([^']+)'/) || [])[1];
+      if (!force && nv && nv === VERSION) { say2(`Tu as déjà la dernière version ✅ (${VERSION})`); return; }
+      say2(`Installation de la version ${nv || 'la plus récente'}…`);
+      const files = ['./', 'index.html', 'style.css', 'engine.js', 'app.js', 'sw.js', 'manifest.json', 'icon.svg'];
+      await Promise.all(files.map(f => fetch(f, { cache: 'reload' }).catch(() => {})));
+      if ('caches' in window) for (const k of await caches.keys()) await caches.delete(k);
+      if (navigator.serviceWorker) for (const r of await navigator.serviceWorker.getRegistrations()) await r.unregister();
+      say2('Redémarrage…'); setTimeout(() => location.reload(), 400);
+    } catch (e) { say2("Impossible de vérifier : es-tu connecté à internet ?"); }
+  }
+
   function renderSettings(v) {
     v.append(el('div', { class: 'top' }, el('div', {}, el('div', { class: 'date', text: 'Personnalise ton cerveau' }), el('h1', { text: 'Réglages ⚙️' }))));
+    v.append(el('div', { class: 'card' }, el('h3', { text: '🔄 Mise à jour' }),
+      el('p', { text: `Version installée : ${VERSION}. Après un changement, touche le bouton pour récupérer la dernière version. Tes tâches et tes idées sont conservées.` }),
+      el('div', { class: 'chips' },
+        el('button', { class: 'chip p', onclick: () => updateApp(false), text: 'Mettre à jour' }),
+        el('button', { class: 'chip', onclick: () => updateApp(true), text: 'Forcer la réinstallation' })),
+      el('p', { class: 'hint', id: 'upmsg', text: '' })));
     const perm = ('Notification' in window) ? Notification.permission : 'indisponible';
     v.append(el('div', { class: 'card' }, el('h3', { text: '🔔 Rappels' }),
       el('p', { text: `État : ${perm === 'granted' ? 'activés' : perm === 'denied' ? 'refusés (à changer dans les réglages iPhone)' : perm === 'default' ? 'pas encore activés' : 'non disponibles ici'}. Les rappels adaptent leur rythme à ta réactivité : réactivité apprise ×${S.rf.toFixed(2)} (${S.rf > 1.15 ? 'rappels plus tôt et plus fréquents' : S.rf < 0.85 ? 'rappels plus discrets' : 'rythme standard'}).` }),
