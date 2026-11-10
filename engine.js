@@ -49,7 +49,7 @@
   /* ---------- Rappels adaptatifs ----------
      rf = « facteur de réactivité » (0.5 à 2.2), appris au fil du temps.
      Plus rf est grand, plus les rappels commencent tôt et sont rapprochés. */
-  const BASE = [72, 24, 6, 2, 0.5]; // heures avant l'échéance
+  const BASE = [72, 48, 24, 12, 6, 3, 1.5, 0.5]; // heures avant l'échéance
 
   function reminderPlan(it, rf = 1) {
     const due = dueAt(it);
