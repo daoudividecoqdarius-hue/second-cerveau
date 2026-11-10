@@ -1,7 +1,7 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.10-12';
+  const VERSION = '2026.11.10-13';
   const API = 'https://second-cerveau-api.second-cerveau-api.workers.dev'; // ton serveur Cloudflare (adresse publique, sans secret)
   const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
@@ -447,6 +447,14 @@
             }
             if (/^\s*(<!doctype html|<html)/i.test(raw)) raw = raw.replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 4000);
             m.text = raw;
+            let ai = null;                                              // l'IA comprend le sens du message (sinon on retombe sur l'analyse simple)
+            try { const a = await srv('/api/ai/message', { text: raw }); if (a && a.ok) ai = a; } catch (e) {}
+            if (ai) {
+              const kinds = { tache: 'Message', evenement: 'Agenda', reponse: 'Répondre', info: 'Info' };
+              S.items.unshift(mk({ title: ai.title, date: ai.date, time: ai.time, imp: ai.importance, cat: kinds[ai.kind] || 'Message', ai: true,
+                notes: [ai.summary, ai.who && 'De : ' + ai.who, '— Message d\'origine —\n' + raw.slice(0, 1500)].filter(Boolean).join('\n') }));
+              continue;
+            }
             const p = E.parse(m.text), title = (p.title || m.text).split('\n')[0].slice(0, 120), ap = E.autoPrio(m.text);
             S.items.unshift(mk({ title, notes: (m.from ? 'De : ' + m.from + '\n' : '') + m.text, cat: 'Message', date: p.date || '', time: p.time || '', imp: p.imp === 3 ? 3 : (ap.sure ? ap.imp : 2) }));
           }
