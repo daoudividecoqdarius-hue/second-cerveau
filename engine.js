@@ -8,16 +8,38 @@
   const hm = d => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
   const norm = x => x.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 
+  /* ---------- Fuseau horaire ----------
+     Sur le téléphone, on utilise l'heure locale. Sur le serveur (qui tourne en UTC), on appelle setTZ('Europe/Paris'). */
+  let TZ = null;
+  const setTZ = z => { TZ = z; };
+  function tzParts(ts) {
+    const f = new Intl.DateTimeFormat('en-CA', { timeZone: TZ, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+    const p = {}; for (const x of f.formatToParts(ts)) p[x.type] = x.value;
+    return { y: +p.year, m: +p.month, d: +p.day, h: +p.hour, mi: +p.minute };
+  }
+  function zonedToMs(y, m, d, hh, mm) {
+    if (!TZ) return new Date(y, m - 1, d, hh, mm).getTime();
+    const want = Date.UTC(y, m - 1, d, hh, mm); let g = want;
+    for (let i = 0; i < 3; i++) { const p = tzParts(g); g += want - Date.UTC(p.y, p.m - 1, p.d, p.h, p.mi); }
+    return g;
+  }
+
   /* ---------- Échéance ---------- */
   function dueAt(it) {
     if (!it.date) return null;
     const [y, m, d] = it.date.split('-').map(Number);
     const [hh, mm] = (it.time || '18:00').split(':').map(Number);
-    return new Date(y, m - 1, d, hh, mm).getTime();
+    return zonedToMs(y, m, d, hh, mm);
   }
 
   // Pas de rappel la nuit : on décale à 8h.
   function quiet(ts) {
+    if (TZ) {
+      const p = tzParts(ts);
+      if (p.h >= 22) return zonedToMs(p.y, p.m, p.d + 1, 8, 0);
+      if (p.h < 8) return zonedToMs(p.y, p.m, p.d, 8, 0);
+      return ts;
+    }
     const d = new Date(ts), h = d.getHours();
     if (h >= 22) { d.setDate(d.getDate() + 1); d.setHours(8, 0, 0, 0); }
     else if (h < 8) d.setHours(8, 0, 0, 0);
@@ -203,6 +225,18 @@
     return { kind, title, date, time, amount, imp, dates: future.map(d => d.iso).slice(0, 5), notes: amount != null ? `Montant : ${amount.toFixed(2).replace('.', ',')} €` : '' };
   }
 
-  const api = { extractDoc, findDates, dueAt, quiet, reminderPlan, shouldAlert, nextReminderAt, adjustRf, nextReview, reviewDue, parse, score, words, dstr, hm, pad, norm, REVIEW_DAYS, DAYS };
+  /* ---------- Priorités automatiques ----------
+     imp : 3 = haute, 2 = normale, 1 = basse. sure=false : je ne sais pas, il faut demander à l'utilisateur. */
+  const HIGH_RE = /\b(examen|partiel|rendu|rendre|deadline|date limite|soutenance|dossier|facture|impot|impots|inscription|convocation|entretien|oral|devoir|contrat|visa|passeport|medecin|dentiste|rdv|rendez-vous|stage|candidature|loyer|assurance|attestation|remboursement|echeance|paiement|payer)\b/;
+  const LOW_RE = /\b(ferie|feriee|veterans?|memorial|thanksgiving|columbus|labor day|independence day|halloween|saint-\w+|vacances|fete des|armistice|pentecote|ascension|assomption|toussaint|noel|jour de l'an|lundi de|black friday|st patrick|saint patrick|mardi gras|carnaval)\b/;
+  const prioKey = t => norm(String(t)).replace(/\d+/g, '').replace(/[^a-z ]+/g, ' ').replace(/\s+/g, ' ').trim();
+  function autoPrio(title) {
+    const t = norm(String(title)), h = t.match(HIGH_RE), l = t.match(LOW_RE);
+    if (h && !l) return { imp: 3, sure: true, why: h[1] };
+    if (l && !h) return { imp: 1, sure: true, why: l[1] };
+    return { imp: 2, sure: false, why: '' };
+  }
+
+  const api = { autoPrio, prioKey, setTZ, tzParts, zonedToMs, extractDoc, findDates, dueAt, quiet, reminderPlan, shouldAlert, nextReminderAt, adjustRf, nextReview, reviewDue, parse, score, words, dstr, hm, pad, norm, REVIEW_DAYS, DAYS };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.Engine = api;
 })(typeof self !== 'undefined' ? self : this);

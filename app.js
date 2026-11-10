@@ -1,7 +1,8 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.10-4';
+  const VERSION = '2026.11.10-5';
+  const API = 'https://second-cerveau-api.second-cerveau-api.workers.dev'; // ton serveur Cloudflare (adresse publique, sans secret)
   const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
   const $ = s => document.querySelector(s);
@@ -32,7 +33,7 @@
       const c = localStorage.getItem('orga.gclient'); if (c && !S.gclient) S.gclient = c;
     } catch (e) {}
   }
-  const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} };
+  const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} scheduleSync(); };
   function mk(o) {
     const now = Date.now();
     const it = { id: now.toString(36) + Math.random().toString(36).slice(2, 6), title: '', notes: '', cat: 'Autre', imp: 2,
@@ -87,7 +88,7 @@
       if (it.alertOpen) S.rf = E.adjustRf(S.rf, 'ignored');
       it.alertOpen = true; it.lastNotified = now; it.lastAlertAt = now; it.snoozeUntil = 0; it.alerts = (it.alerts || 0) + 1;
       ch = true;
-      notify('À ne pas oublier', `${it.title} — ${isLate(it) ? 'en retard' : rel(E.dueAt(it))}`, it.id);
+      if (!S.push) notify('À ne pas oublier', `${it.title} — ${isLate(it) ? 'en retard' : rel(E.dueAt(it))}`, it.id);   // si le serveur gère les rappels, pas de doublon
     }
     const h = new Date().getHours();
     if (S.lastDigest !== today() && h >= 8) {
@@ -102,7 +103,17 @@
   /* ================= Skills (assistant) ================= */
   const lines = arr => arr.map(i => '• ' + i.title + (i.time ? ` (${i.time})` : '')).join('\n');
   const byTime = (a, b) => (E.dueAt(a) || 0) - (E.dueAt(b) || 0);
-  const dayItems = ds => [...open().filter(i => i.date === ds), ...S.events.filter(e => e.date === ds)].sort(byTime);
+  /* Priorité d'un événement d'agenda : tes choix d'abord, puis mes règles, sinon je te demande. */
+  function prioOf(e) {
+    const d = S.prio && S.prio[E.prioKey(e.title)];
+    if (d) return d;
+    if (e.acct === 'ecole') return 'normal';
+    const a = E.autoPrio(e.title);
+    if (a.sure) return a.imp === 3 ? 'high' : 'low';
+    return !e.time ? 'ask' : 'normal';             // événement sur toute la journée et inconnu : je demande
+  }
+  const visibleEvents = () => S.events.filter(e => prioOf(e) !== 'ignore');
+  const dayItems = ds => [...open().filter(i => i.date === ds), ...visibleEvents().filter(e => e.date === ds)].sort(byTime);
   const bestMatch = q => {
     const c = open().map(i => [E.score(q, i), i]).filter(x => x[0] > 0).sort((a, b) => b[0] - a[0]);
     return c.length ? c[0][1] : null;
@@ -122,6 +133,25 @@
     { id: 'aide', icon: '❓', name: 'Aide', desc: 'Liste ce que je sais faire', ex: "Que sais-tu faire ?",
       match: t => /(?:que sais[- ]tu|tes (?:skills|comp[ée]tences|capacit[ée]s)|^aide$|^help$)/i.test(t),
       run: () => 'Voici mes compétences :\n' + SKILLS.filter(s => s.id !== 'ajouter').map(s => `${s.icon} ${s.name} : ${s.desc}\n   ex : « ${s.ex} »`).join('\n') + '\n\nSinon, écris simplement ce que tu veux retenir, je m’en occupe.' },
+    { id: 'priorite', icon: '⭐', name: 'Priorités', desc: "Je décide de l'importance, tu corriges", ex: 'Ignore Veterans Day',
+      match: t => /^(?:ignore|masque|cache)\s+\S/i.test(t) || /\b(?:est|c['’]est)\s+(?:vraiment\s+)?(?:important|prioritaire|urgent)\b/i.test(t) || /\b(?:pas|plus)\s+(?:important|urgent|prioritaire)\b/i.test(t) || /^(?:qu['’]est[- ]ce qui est|c['’]est quoi)\s+(?:le plus\s+)?(?:important|prioritaire|urgent)/i.test(t),
+      run: t => {
+        if (/^(?:qu['’]est[- ]ce qui est|c['’]est quoi)\s+(?:le plus\s+)?(?:important|prioritaire|urgent)/i.test(t)) {
+          const o = [...open().filter(i => i.date), ...visibleEvents().filter(e => e.date >= today() && prioOf(e) === 'high')].sort((a, b) => ((b.imp || 3) - (a.imp || 3)) || byTime(a, b)).slice(0, 6);
+          return o.length ? "Voici l'essentiel :\n" + o.map(i => `• ${i.title} (${when(i)})`).join('\n') : "Rien d'important en vue.";
+        }
+        const ign = /^(?:ignore|masque|cache)\s+/i.test(t), low = /\b(?:pas|plus)\s+(?:important|urgent|prioritaire)\b/i.test(t);
+        const q = t.replace(/^(?:ignore|masque|cache)\s+/i, '').replace(/\b(?:n['’]?est|c['’]?est|est)\s+(?:vraiment\s+|plus\s+|pas\s+)*(?:important|urgent|prioritaire)\b/gi, '').replace(/\b(?:pas|plus)\s+(?:important|urgent|prioritaire)\b/gi, '').trim();
+        const level = ign ? 'ignore' : low ? 'low' : 'high';
+        const it = bestMatch(q);
+        if (it) { it.imp = level === 'high' ? 3 : 1; it.lastNotified = Date.now(); save(); render(); return `⭐ « ${it.title} » passe en priorité ${level === 'high' ? 'haute : tes rappels commenceront plus tôt' : 'basse : tes rappels seront plus discrets'}.`; }
+        const ev = S.events.map(e => [E.score(q, e), e]).filter(x => x[0] > 0).sort((a, b) => b[0] - a[0])[0];
+        if (ev) {
+          S.prio = S.prio || {}; S.prio[E.prioKey(ev[1].title)] = level; save(); render();
+          return level === 'ignore' ? `🔕 Compris : je ne t'afficherai plus « ${ev[1].title} » ni les événements du même nom.` : level === 'low' ? `👌 « ${ev[1].title} » passe en basse priorité (grisé, jamais mis en avant).` : `⭐ « ${ev[1].title} » est désormais important.`;
+        }
+        return "Je n'ai pas trouvé de quoi il s'agit. Redis-moi le nom exact de la tâche ou de l'événement.";
+      } },
     { id: 'terminer', icon: '✅', name: 'Terminer', desc: 'Marque une tâche comme faite', ex: "J'ai fini le dossier de stage",
       match: t => /^(?:j['’]ai (?:fini|termin[ée]|fait|envoy[ée]|rendu|pay[ée])|c['’]est (?:fait|fini)|fini|termin[ée])\b/i.test(t),
       run: t => {
@@ -218,10 +248,12 @@
       run: t => {
         const p = E.parse(t);
         if (!p.title) return "Je n'ai pas compris. Essaie : « Rappelle-moi d'appeler la banque demain à 10h ».";
-        const it = mk({ title: p.title, date: p.date, time: p.time, imp: p.imp }); S.items.unshift(it); save(); render();
-        if (!it.date) return `C'est noté : « ${it.title} » (sans date). Je te le ressortirai régulièrement dans « Mémoire ».`;
+        const ap = p.imp === 3 ? { sure: false } : E.autoPrio(p.title);
+        const it = mk({ title: p.title, date: p.date, time: p.time, imp: ap.sure ? ap.imp : p.imp }); S.items.unshift(it); save(); render();
+        const why = ap.sure ? `\n⭐ Priorité ${ap.imp === 3 ? 'haute' : 'basse'} : j'ai repéré « ${ap.why} ». Dis-moi si ce n'est pas bon (« ${it.title.split(' ').slice(0, 4).join(' ')} n'est pas important » pour la baisser).` : '';
+        if (!it.date) return `C'est noté : « ${it.title} » (sans date). Je te le ressortirai régulièrement dans « Mémoire ».${why}`;
         const nx = E.nextReminderAt(it, S.rf, Date.now());
-        return `C'est noté ✅ « ${it.title} » — ${when(it)}${it.imp === 3 ? ' (priorité haute)' : ''}.\n` + (nx ? `Premier rappel ${rel(nx)}, puis de plus en plus proches.` : 'Je te préviendrai au moment voulu.');
+        return `C'est noté ✅ « ${it.title} » — ${when(it)}${it.imp === 3 ? ' (priorité haute)' : ''}.\n` + (nx ? `Premier rappel ${rel(nx)}, puis de plus en plus proches.` : 'Je te préviendrai au moment voulu.') + why;
       } }
   ];
   const enabled = () => SKILLS.filter(s => !S.off.includes(s.id));
@@ -348,6 +380,53 @@
     }).requestAccessToken();
   }
 
+  /* ================= Serveur (rappels app fermée + planning école) ================= */
+  async function srv(path, body) {
+    const r = await fetch(API + path, { method: body ? 'POST' : 'GET', headers: { Authorization: 'Bearer ' + S.srvToken, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+    if (!r.ok) throw new Error('Serveur ' + r.status);
+    return r.json();
+  }
+  let syncTimer = null, syncing = false;
+  function scheduleSync() { if (!S.srvToken) return; clearTimeout(syncTimer); syncTimer = setTimeout(syncServer, 2500); }
+  async function syncServer() {
+    if (!S.srvToken || syncing || navigator.onLine === false) return;
+    syncing = true;
+    try {
+      const items = S.items.map(i => ({ id: i.id, title: i.title, date: i.date, time: i.time, imp: i.imp, done: !!i.done, created: i.created, lastNotified: i.lastNotified, lastAlertAt: i.lastAlertAt, alertOpen: !!i.alertOpen, snoozeUntil: i.snoozeUntil }));
+      const res = await srv('/api/sync', { items, rf: S.rf });
+      let ch = false;
+      for (const it of S.items) {
+        const ts = res.alerts && res.alerts[it.id];
+        if (ts && ts > (it.lastNotified || 0) && !it.done) { it.lastNotified = ts; it.lastAlertAt = ts; it.alertOpen = true; it.snoozeUntil = 0; it.alerts = (it.alerts || 0) + 1; ch = true; }
+      }
+      const ev = await srv('/api/events');
+      const mapped = (ev.events || []).map(e => ({ id: 's' + e.id, title: e.title, date: e.date, time: e.time, endTime: e.endTime, loc: e.loc, cat: 'Cours', ro: true, cal: 'ESSEC', acct: 'ecole', done: false }));
+      if (JSON.stringify(mapped) !== JSON.stringify(S.events.filter(e => e.acct === 'ecole'))) { S.events = S.events.filter(e => e.acct !== 'ecole').concat(mapped); ch = true; }
+      S.srvSync = Date.now(); S.srvErr = '';
+      try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {}
+      if (ch) render();
+    } catch (e) { S.srvErr = e.message; } finally { syncing = false; }
+  }
+  const b64key = k => Uint8Array.from(atob(k.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+  async function enablePush() {
+    const msg = t => { const n = $('#pushmsg'); if (n) n.textContent = t; };
+    try {
+      if (!S.srvToken) { msg("Le serveur n'est pas appairé : ouvre le lien d'appairage que je t'ai envoyé."); return; }
+      if (!('serviceWorker' in navigator) || !('PushManager' in window)) { msg("Il faut ouvrir l'app depuis l'écran d'accueil (Partager → Sur l'écran d'accueil) pour recevoir des notifications."); return; }
+      if (await Notification.requestPermission() !== 'granted') { msg('Notifications refusées. Active-les dans Réglages iPhone → Notifications → Cerveau.'); return; }
+      const reg = await navigator.serviceWorker.ready;
+      const { key } = await (await fetch(API + '/api/vapid')).json();
+      const sub = (await reg.pushManager.getSubscription()) || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64key(key) });
+      await srv('/api/push/subscribe', { subscription: sub.toJSON() });
+      S.push = true; save(); render(); msg('✅ Rappels app fermée activés.');
+    } catch (e) { msg('Échec : ' + e.message); }
+  }
+  async function testPush() {
+    const msg = t => { const n = $('#pushmsg'); if (n) n.textContent = t; };
+    try { const r = await srv('/api/push/test', {}); msg(r.sent ? 'Test envoyé. Ferme l’app : la notification arrive dans quelques secondes.' : "Aucun appareil abonné. Touche d'abord « Activer les rappels app fermée »."); }
+    catch (e) { msg('Échec : ' + e.message); }
+  }
+
   /* ================= Vues ================= */
   let view = 'home';
   function row(it) {
@@ -359,8 +438,9 @@
       it.date && el('span', { class: late ? 'late' : '', text: when(it) }),
       ev && it.cal && el('span', { text: it.cal }),
       !ev && !it.date && !it.done && it.nextReview && E.reviewDue(it, Date.now()) && el('span', { class: 'late', text: 'à revoir' }));
-    return el('div', { class: 'row' + (it.done ? ' done' : ''), onclick: ev ? null : () => openSheet(it) },
-      left, el('div', { class: 'b' }, el('div', { class: 'n', text: it.title }), meta), !ev && it.imp === 3 && !it.done && el('span', { class: 'dot', title: 'Haute' }));
+    const pr = ev ? prioOf(it) : '';
+    return el('div', { class: 'row' + (it.done ? ' done' : '') + (pr === 'low' || (!ev && it.imp === 1 && !it.done) ? ' dim' : ''), onclick: ev ? null : () => openSheet(it) },
+      left, el('div', { class: 'b' }, el('div', { class: 'n', text: it.title }), meta), ((!ev && it.imp === 3 && !it.done) || pr === 'high') && el('span', { class: 'dot', title: 'Haute' }));
   }
   const section = (title, items, cls) => items.length ? [el('h2', { class: cls || '', text: `${title} (${items.length})` }), ...items.map(row)] : [];
 
@@ -373,7 +453,21 @@
     if (S.gacc && Object.keys(S.gacc).length && Date.now() - (S.gsync || 0) > 45 * 60e3) {
       v.append(el('button', { class: 'chip', style: 'margin-bottom:12px', onclick: () => connectGoogle(false), text: `🔄 Actualiser l'agenda (dernière synchro ${rel(S.gsync || 0)})` }));
     }
-    const all = [...open().filter(i => i.date), ...S.events.filter(e => e.date >= td)];
+    const evs = visibleEvents();
+    // Événements que je ne sais pas classer : je te demande ton avis (2 à la fois)
+    const seen = new Set(), toAsk = [];
+    for (const e of evs) { const k = E.prioKey(e.title); if (e.date >= td && prioOf(e) === 'ask' && !seen.has(k)) { seen.add(k); toAsk.push(e); } }
+    for (const e of toAsk.slice(0, 2)) {
+      const setP = lvl => { S.prio = S.prio || {}; S.prio[E.prioKey(e.title)] = lvl; save(); render(); };
+      v.append(el('div', { class: 'alert', style: 'border-color:var(--acc)' },
+        el('div', { class: 't', text: '🤔 Est-ce important pour toi ?' }),
+        el('div', { class: 'm', text: `« ${e.title} » · ${dayLabel(e.date)}` }),
+        el('div', { class: 'chips' },
+          el('button', { class: 'chip p', onclick: () => setP('high'), text: '⭐ Important' }),
+          el('button', { class: 'chip', onclick: () => setP('normal'), text: 'Normal' }),
+          el('button', { class: 'chip', onclick: () => setP('ignore'), text: '🔕 Ignorer' }))));
+    }
+    const all = [...open().filter(i => i.date), ...evs.filter(e => e.date >= td && prioOf(e) !== 'low' && prioOf(e) !== 'ask')];
     const upcoming = all.filter(i => E.dueAt(i) >= now - 30 * 60e3 || isLate(i)).sort((a, b) => (isLate(b) - isLate(a)) || byTime(a, b));
     const nxt = upcoming.find(i => !i.ro && isLate(i)) || upcoming.find(i => E.dueAt(i) >= now - 30 * 60e3);
     const todayAll = S.items.filter(i => i.date === td), doneN = todayAll.filter(i => i.done).length, tot = todayAll.length;
@@ -400,7 +494,7 @@
 
     const dated = open().filter(i => i.date);
     const late = dated.filter(isLate).sort(byTime);
-    const day = ds => [...dated.filter(i => i.date === ds && !isLate(i)), ...S.events.filter(e => e.date === ds)].sort(byTime);
+    const day = ds => [...dated.filter(i => i.date === ds && !isLate(i)), ...evs.filter(e => e.date === ds)].sort(byTime);
     v.append(...section('En retard', late, 'red'));
     v.append(...section("Aujourd'hui", day(td)));
     const wk = []; for (let k = 1; k <= 7; k++) wk.push(...day(E.dstr(addDays(k))));
@@ -505,6 +599,13 @@
         el('button', { class: 'chip p', onclick: () => updateApp(false), text: 'Mettre à jour' }),
         el('button', { class: 'chip', onclick: () => updateApp(true), text: 'Forcer la réinstallation' })),
       el('p', { class: 'hint', id: 'upmsg', text: '' })));
+    v.append(el('div', { class: 'card' }, el('h3', { text: '☁️ Serveur & rappels app fermée' }),
+      el('p', { text: S.srvToken ? `Serveur appairé${S.srvSync ? ' · dernière synchro ' + rel(S.srvSync) : ''}. Il t'envoie tes rappels même quand l'app est fermée et lit ton planning de l'école.${S.srvErr ? ' (dernière erreur : ' + S.srvErr + ')' : ''}` : "Pas encore appairé. Ouvre une fois le lien d'appairage envoyé par ton assistant." }),
+      el('div', { class: 'chips' },
+        el('button', { class: 'chip p', onclick: enablePush, text: S.push ? 'Réactiver les notifications' : 'Activer les rappels app fermée' }),
+        el('button', { class: 'chip', onclick: testPush, text: 'Tester' }),
+        el('button', { class: 'chip', onclick: async () => { await syncServer(); render(); }, text: 'Synchroniser' })),
+      el('p', { class: 'hint', id: 'pushmsg', text: '' })));
     const perm = ('Notification' in window) ? Notification.permission : 'indisponible';
     v.append(el('div', { class: 'card' }, el('h3', { text: '🔔 Rappels' }),
       el('p', { text: `État : ${perm === 'granted' ? 'activés' : perm === 'denied' ? 'refusés (à changer dans les réglages iPhone)' : perm === 'default' ? 'pas encore activés' : 'non disponibles ici'}. Les rappels adaptent leur rythme à ta réactivité : réactivité apprise ×${S.rf.toFixed(2)} (${S.rf > 1.15 ? 'rappels plus tôt et plus fréquents' : S.rf < 0.85 ? 'rappels plus discrets' : 'rythme standard'}).` }),
@@ -538,7 +639,7 @@
     v.append(el('div', { class: 'card' }, el('h3', { text: '💾 Sauvegarde' }), el('p', { text: 'Tes données restent sur ce téléphone. Copie ta sauvegarde de temps en temps (dans Notes, par exemple).' }), box,
       el('div', { class: 'chips', style: 'margin-top:10px' },
         el('button', { class: 'chip', onclick: async () => {
-          box.value = JSON.stringify({ items: S.items, rf: S.rf, off: S.off, tts: S.tts });
+          box.value = JSON.stringify({ items: S.items, rf: S.rf, off: S.off, tts: S.tts, prio: S.prio || {} });
           box.select(); try { await navigator.clipboard.writeText(box.value); bmsg.textContent = 'Copié !'; } catch (e) { bmsg.textContent = 'Sélectionne le texte et copie-le.'; }
         }, text: 'Créer / copier' }),
         el('button', { class: 'chip', onclick: () => {
@@ -596,8 +697,11 @@
   /* ================= Démarrage ================= */
   load();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
+  const pair = location.hash.match(/pair=([\w-]{20,})/);        // lien d'appairage : #pair=…
+  if (pair) { S.srvToken = pair[1]; save(); try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {} say("☁️ Appairage réussi : ton téléphone est relié au serveur. Va dans Réglages pour activer les rappels app fermée.", true); }
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { tick(); syncServer(); } });
   setInterval(tick, 30000);
-  tick(); render();
+  setInterval(() => { if (!document.hidden) syncServer(); }, 120000);
+  tick(); render(); syncServer();
   window.__app = { get S() { return S; }, ask, handleFile, render, tick, mk, setView: v => { view = v; render(); } }; // utile pour les tests
 })();

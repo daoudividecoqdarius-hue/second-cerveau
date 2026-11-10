@@ -25,6 +25,7 @@ h1{font-size:30px;margin:0;letter-spacing:-.025em;line-height:1.1}
 .chip{padding:8px 14px}
 .row{padding:14px}
 .row .n{font-weight:500}
+.row.dim{opacity:.55}
 .focus .big{font-size:22px}
 .tag{font-weight:600}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
