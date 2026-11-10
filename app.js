@@ -1,7 +1,7 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.10-5';
+  const VERSION = '2026.11.10-6';
   const API = 'https://second-cerveau-api.second-cerveau-api.workers.dev'; // ton serveur Cloudflare (adresse publique, sans secret)
   const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
@@ -600,7 +600,14 @@
         el('button', { class: 'chip', onclick: () => updateApp(true), text: 'Forcer la réinstallation' })),
       el('p', { class: 'hint', id: 'upmsg', text: '' })));
     v.append(el('div', { class: 'card' }, el('h3', { text: '☁️ Serveur & rappels app fermée' }),
-      el('p', { text: S.srvToken ? `Serveur appairé${S.srvSync ? ' · dernière synchro ' + rel(S.srvSync) : ''}. Il t'envoie tes rappels même quand l'app est fermée et lit ton planning de l'école.${S.srvErr ? ' (dernière erreur : ' + S.srvErr + ')' : ''}` : "Pas encore appairé. Ouvre une fois le lien d'appairage envoyé par ton assistant." }),
+      el('p', { text: S.srvToken ? `Serveur appairé${S.srvSync ? ' · dernière synchro ' + rel(S.srvSync) : ''}. Il t'envoie tes rappels même quand l'app est fermée et lit ton planning de l'école.${S.srvErr ? ' (dernière erreur : ' + S.srvErr + ')' : ''}` : "Pas encore appairé. Colle ci-dessous le code d'appairage que ton assistant t'a envoyé." }),
+      !S.srvToken && el('div', { class: 'inline', style: 'margin-bottom:10px' },
+        el('input', { type: 'text', id: 'pairin', placeholder: "Colle ici le code d'appairage" }),
+        el('button', { class: 'chip p', type: 'button', onclick: () => {
+          const m = ($('#pairin').value || '').match(/([\w-]{30,})\s*$/);
+          if (!m) { const n = $('#pushmsg'); if (n) n.textContent = 'Code invalide : colle le code complet.'; return; }
+          S.srvToken = m[1].replace(/^.*pair=/, ''); save(); syncServer().then(render); render();
+        }, text: 'Appairer' })),
       el('div', { class: 'chips' },
         el('button', { class: 'chip p', onclick: enablePush, text: S.push ? 'Réactiver les notifications' : 'Activer les rappels app fermée' }),
         el('button', { class: 'chip', onclick: testPush, text: 'Tester' }),
