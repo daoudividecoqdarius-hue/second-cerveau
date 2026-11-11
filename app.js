@@ -1,7 +1,7 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.11-26';
+  const VERSION = '2026.11.11-27';
   const API = 'https://second-cerveau-api.second-cerveau-api.workers.dev'; // ton serveur Cloudflare (adresse publique, sans secret)
   const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
@@ -286,13 +286,25 @@
   const aiReady = () => !!(S.aiOn && S.srvToken && navigator.onLine !== false);
   function aiContext() {
     const td = today(), lim = E.dstr(addDays(21));
-    const dated = open().filter(i => i.date).sort(byTime).slice(0, 40).map(i => ({ id: i.id, t: i.title.slice(0, 90), d: i.date, h: i.time, i: i.imp || 2, late: isLate(i) || undefined }));
+    const dated = open().filter(i => i.date).sort(byTime).slice(0, 40).map(i => ({ id: i.id, t: i.title.slice(0, 90), d: i.date, h: i.time, i: i.imp || 2, late: isLate(i) || undefined, quand: rel(E.dueAt(i)) }));
     const ideas = open().filter(i => !i.date).slice(0, 10).map(i => ({ id: i.id, t: i.title.slice(0, 90), idea: true }));
     const evs = visibleEvents().filter(e => e.date >= td && e.date <= lim).sort(byTime).slice(0, 40).map(e => ({ t: e.title.slice(0, 90), d: e.date, h: e.time }));
     const mails = (S.mail || []).slice(0, 5).map(m => ({ t: (m.title || '').slice(0, 90), d: m.date || '' }));
     return { items: [...dated, ...ideas], events: evs, mails, memoire: (S.mem || []).slice(0, 40) };
   }
-  const nearBottom = () => window.innerHeight + window.scrollY >= document.body.scrollHeight - 240;
+  const scroller = () => $('#view');                               // seule la zone du milieu défile (les barres ne bougent plus jamais)
+  const nearBottom = () => { const sc = scroller(); return sc.clientHeight + sc.scrollTop >= sc.scrollHeight - 240; };
+  const toBottom = () => { const sc = scroller(); sc.scrollTop = sc.scrollHeight; };
+  function toast(t) {
+    const n = el('div', { class: 'toast', text: t }); document.body.append(n);
+    setTimeout(() => n.classList.add('out'), 2200); setTimeout(() => n.remove(), 2600);
+  }
+  /* Envoie un résultat ailleurs : feuille de partage iPhone (Notes, Messages, WhatsApp, Rappels, Mail…) ; sinon copie */
+  async function shareOut(title, text) {
+    const full = (title ? title + '\n\n' : '') + String(text || '').replace(/\*\*([^*]+)\*\*/g, '$1').replace(/^#{1,4}\s+/gm, '');
+    if (navigator.share) { try { await navigator.share({ title: title || 'Second Cerveau', text: full }); return; } catch (e) { if (e.name === 'AbortError') return; } }
+    try { await navigator.clipboard.writeText(full); toast('Copié ✓ Colle-le dans Notes ou Messages'); } catch (e) { toast('Impossible de partager ici'); }
+  }
   /* Mini-rendu Markdown sûr : tout le texte est échappé avant la mise en forme */
   function md(src) {
     const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -328,7 +340,7 @@
     if (t) t.innerHTML = m.t ? md(m.t) : '<span class="dots"><i></i><i></i><i></i></span>';
     let s = n.querySelector('.st');
     if (m.status) { if (!s) { s = el('div', { class: 'st' }); n.append(s); } s.textContent = m.status; } else if (s) s.remove();
-    if (stick) window.scrollTo(0, document.body.scrollHeight);
+    if (stick) toBottom();
   }
   async function aiStream(text) {
     const m = { r: 'a', t: '', ts: Date.now(), id: 'm' + Date.now().toString(36), ai: true, stream: true };
@@ -724,7 +736,7 @@
     for (const i of dated) {
       if (isLate(i) || !i.time) continue;
       const c = conflictOf(i.date, i.time, i.id); if (!c) continue;
-      if (c.kind === 'task') { const k = [i.id, c.id].sort().join('|'); if (pairs.has(k)) continue; pairs.add(k); }
+      if (c.kind === 'task') continue;                         // deux échéances à la même heure, ce n'est pas un vrai conflit
       const nt = c.kind === 'event' && c.end <= 21 * 60 ? fromMin(c.end) : null;
       out.push({ key: 'c' + i.id, icon: '⚠️', text: `« ${i.title.slice(0, 40)} » tombe ${c.kind === 'event' ? 'pendant' : 'en même temps que'} « ${c.title.slice(0, 40)} » (${dayLabel(i.date)}, ${i.time}).`,
         actions: nt ? [{ type: 'move', id: i.id, date: i.date, time: nt }] : [] });
@@ -747,16 +759,17 @@
     }
     return out.slice(0, 6);
   }
-  let planBusy = false;
+  let planBusy = false, astAll = false, laterAll = false;
   async function loadPlan(force) {
     if (planBusy || !aiReady() || new Date().getHours() < 6) return;
     const td = today(), p = S.plan;
-    if (!force && p && ((p.day === td && Date.now() - p.ts < 6 * H) || (p.fail && Date.now() - p.fail < 15 * 60e3))) return;
+    const sig = JSON.stringify(open().map(i => [i.id, i.date, i.time]));     // tu as changé ton planning → les idées sont refaites (au plus toutes les 20 min)
+    if (!force && p && ((p.day === td && Date.now() - p.ts < 6 * H && (p.sig === sig || Date.now() - p.ts < 20 * 60e3)) || (p.fail && Date.now() - p.fail < 15 * 60e3))) return;
     planBusy = true; render();
     try {
       const r = await srv('/api/ai/plan', { context: aiContext(), radar: radar().map(x => x.text) });
       if (!r.ok) throw new Error(r.reason || 'IA indisponible');
-      S.plan = { day: td, ts: Date.now(), items: (r.initiatives || []).map(o => ({ icon: o.icon, text: o.text, prop: o.action ? { type: 'ai', actions: [o.action], doneIdx: [] } : null })) };
+      S.plan = { day: td, ts: Date.now(), sig, items: (r.initiatives || []).map(o => ({ icon: o.icon, text: o.text, prop: o.action ? { type: 'ai', actions: [o.action], doneIdx: [] } : null })) };
     } catch (e) { S.plan = { ...(S.plan || {}), fail: Date.now(), err: e.message }; }
     finally { planBusy = false; save(); render(); }
   }
@@ -771,13 +784,16 @@
     if (planBusy && !pl.length) card.append(el('div', { class: 'ovl', text: 'Je regarde ton planning, tes mails et ton agenda…' }));
     const rowFor = (icon, text, prop, onHide) => {
       const b = el('div', { class: 'ai-i' }, el('div', { class: 'ait', text: icon + ' ' + text }));
-      if (prop) renderActions(b, { prop });
-      if (onHide) b.append(el('div', { class: 'chips', style: 'margin-top:8px' }, el('button', { class: 'chip', type: 'button', text: 'Pas maintenant', onclick: onHide })));
+      if (prop) renderActions(b, { prop, short: true });
+      if (onHide) { const r = b.querySelector('.chips') || b.appendChild(el('div', { class: 'chips', style: 'margin-top:10px' })); r.append(el('button', { class: 'chip g', type: 'button', text: 'Plus tard', onclick: onHide })); }
       return b;
     };
-    for (const r of rd) card.append(rowFor(r.icon, r.text, r.actions.length ? { type: 'ai', actions: r.actions, doneIdx: [] } : null));
-    for (const x of pl) card.append(rowFor(x.icon, x.text, x.prop, () => { x.hidden = true; save(); render(); }));
-    v.append(card);
+    const live = x => { const a0 = x.prop && x.prop.actions[0]; const it = a0 && a0.id && S.items.find(i => i.id === a0.id); return !(it && it.done); };
+    const rows = [...rd.map(r => rowFor(r.icon, r.text, r.actions.length ? { type: 'ai', actions: r.actions, doneIdx: [] } : null)),
+      ...pl.filter(live).map(x => rowFor(x.icon, x.text, x.prop, () => { x.hidden = true; save(); render(); }))];
+    card.append(...(astAll ? rows : rows.slice(0, 3)));
+    if (rows.length > 3) card.append(el('button', { class: 'more', type: 'button', text: astAll ? 'Réduire' : `Voir ${rows.length - 3} de plus`, onclick: () => { astAll = !astAll; render(); } }));
+    if (rows.length) v.append(card);
   }
 
   function renderHome(v) {
@@ -868,7 +884,9 @@
     v.append(...section('Cette semaine', wk));
     const lim = E.dstr(addDays(7));
     const later = [...dated.filter(i => i.date > lim && !isLate(i)), ...evs.filter(e => e.date > lim)].sort(byTime).slice(0, 60);
-    v.append(...section('Plus tard', later));
+    const ls = section('Plus tard', later);
+    v.append(...(laterAll ? ls : ls.slice(0, 6)));
+    if (later.length > 5) v.append(el('button', { class: 'more', type: 'button', text: laterAll ? 'Réduire' : `Voir les ${later.length - 5} autres`, onclick: () => { laterAll = !laterAll; render(); } }));
     v.append(...section('💭 À revoir', open().filter(i => E.reviewDue(i, now))));
     if (!S.items.length && !S.events.length) v.append(el('div', { class: 'empty', text: "Rien pour l'instant. Appuie sur + ou parle à l'assistant : « Rappelle-moi de… »" }));
   }
@@ -915,6 +933,7 @@
         if (c) b.append(el('div', { class: 'hint', style: 'margin-top:8px', text: `⚠️ ${dayLabel(a.date)} à ${a.time} : tu as déjà « ${c.title.slice(0, 40)} »${c.kind === 'event' ? ' (jusqu\'à ' + fromMin(c.end) + ')' : ''}.` }));
       }
       if (a.type === 'note') b.append(el('div', { class: 'hint', style: 'white-space:pre-wrap;margin-top:8px', text: 'Texte ajouté : ' + a.text }));
+      if (a.type === 'share') { row.append(el('button', { class: 'chip p', type: 'button', text: `📤 Envoyer « ${a.title.slice(0, 28)} »`, onclick: () => shareOut(a.title, a.text) })); return; }
       if (a.type === 'mail') {
         b.append(el('div', { class: 'hint', style: 'white-space:pre-wrap;margin-top:8px', text: (a.subject ? 'Objet : ' + a.subject + '\n\n' : '') + a.body }));
         row.append(...mailButtons(a.to, a.subject, a.body)); return;
@@ -932,8 +951,9 @@
       }
       const label = a.type === 'add' ? `➕ ${a.title}${a.date ? ' · ' + dayLabel(a.date) + (a.time ? ' ' + a.time : '') : ''}${a.notes ? ' 📝' : ''}`
         : a.type === 'remember' ? `🧠 Retenir : ${a.text.slice(0, 40)}`
-        : a.type === 'note' ? `📝 Ajouter aux notes de « ${it.title.slice(0, 28)} »`
-        : a.type === 'done' ? `✅ Terminer « ${it.title.slice(0, 40)} »` : `📅 Déplacer « ${it.title.slice(0, 30)} » → ${dayLabel(a.date)}${a.time ? ' ' + a.time : ''}`;
+        : a.type === 'note' ? (m.short ? '📝 Ajouter aux notes' : `📝 Ajouter aux notes de « ${it.title.slice(0, 28)} »`)
+        : a.type === 'done' ? (m.short ? '✅ C’est fait' : `✅ Terminer « ${it.title.slice(0, 40)} »`)
+        : m.short ? `📅 Déplacer à ${a.date === today() ? "aujourd'hui" : dayLabel(a.date)}${a.time ? ' ' + a.time : ''}` : `📅 Déplacer « ${it.title.slice(0, 30)} » → ${dayLabel(a.date)}${a.time ? ' ' + a.time : ''}`;
       row.append(el('button', { class: 'chip p', onclick: () => { applyAction(a); (m.prop.doneIdx = m.prop.doneIdx || []).push(k); save(); render(); }, text: label }));
     });
     if (row.childNodes.length) b.append(row);
@@ -959,9 +979,11 @@
       } else if (m.prop && m.prop.type === 'mail') {
         b.append(el('div', { class: 'chips', style: 'margin-top:8px' }, ...mailButtons(m.prop.to, m.prop.subject, m.prop.body)));
       }
-      if (m.ai && !m.stream && m.t && m.t.length > 160) b.append(el('button', { class: 'cp', type: 'button', text: 'Copier', onclick: e => {
-        const btn = e.target; const done = () => { btn.textContent = 'Copié ✓'; setTimeout(() => { btn.textContent = 'Copier'; }, 1500); };
-        try { navigator.clipboard.writeText(m.t).then(done, done); } catch (x) { done(); } } }));
+      if (m.ai && !m.stream && m.t && m.t.length > 160) b.append(el('div', { class: 'cps' },
+        el('button', { class: 'cp', type: 'button', text: 'Copier', onclick: e => {
+          const btn = e.target; const done = () => { btn.textContent = 'Copié ✓'; setTimeout(() => { btn.textContent = 'Copier'; }, 1500); };
+          try { navigator.clipboard.writeText(m.t).then(done, done); } catch (x) { done(); } } }),
+        el('button', { class: 'cp', type: 'button', text: '📤 Envoyer…', onclick: () => shareOut('', m.t) })));
       chat.append(b);
     }
     v.append(chat);
@@ -998,7 +1020,7 @@
     const sendBtn = aiBusy ? el('button', { class: 'send stop', type: 'button', 'aria-label': 'Arrêter', text: '■', onclick: () => { if (aiCtl) aiCtl.abort(); } })
       : el('button', { class: 'send', type: 'button', onclick: send, 'aria-label': 'Envoyer', text: '↑' });
     v.append(el('div', { class: 'composer' }, clip, mic, input, sendBtn));
-    setTimeout(() => { grow(); window.scrollTo(0, document.body.scrollHeight); }, 0);
+    setTimeout(() => { grow(); toBottom(); }, 0);
   }
 
 
@@ -1107,12 +1129,12 @@
 
   function render() {
     const v = $('#view'); const keep = document.activeElement && document.activeElement.id === 'chatin';
-    const scrollY = window.scrollY;
+    const scrollY = v.scrollTop;
     v.innerHTML = '';
     ({ home: renderHome, brain: renderBrain, chat: renderChat, settings: renderSettings })[view](v);
     document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.v === view));
     $('#fab').hidden = view === 'chat' || view === 'settings';
-    if (view !== 'chat') window.scrollTo(0, scrollY);
+    if (view !== 'chat') v.scrollTop = scrollY;
     if (keep) { const i = $('#chatin'); if (i) i.focus(); }
   }
 
@@ -1123,11 +1145,12 @@
     $('#sheettitle').textContent = it ? 'Modifier' : 'Nouvelle entrée';
     $('#s-title').value = it ? it.title : ''; $('#s-date').value = it ? it.date : ''; $('#s-time').value = it ? it.time : '';
     $('#s-imp').value = it ? it.imp : 2; $('#s-cat').value = it ? it.cat : 'Autre'; $('#s-notes').value = it ? it.notes || '' : '';
-    $('#s-del').hidden = !it; $('#sheetwrap').hidden = false;
+    $('#s-del').hidden = !it; $('#s-share').hidden = !it; $('#sheetwrap').hidden = false;
     setTimeout(() => $('#s-title').focus(), 50);
   }
   const closeSheet = () => { $('#sheetwrap').hidden = true; editing = null; };
   $('#s-cancel').onclick = closeSheet;
+  $('#s-share').onclick = () => { const t = $('#s-title').value.trim(), n = $('#s-notes').value.trim(); shareOut(t, [$('#s-date').value && dayLabel($('#s-date').value) + ($('#s-time').value ? ' à ' + $('#s-time').value : ''), n].filter(Boolean).join('\n\n')); };
   $('#sheetwrap').onclick = e => { if (e.target.id === 'sheetwrap') closeSheet(); };
   let delArmed = false;
   $('#s-del').onclick = () => {
@@ -1149,7 +1172,7 @@
     save(); closeSheet(); render();
   };
   $('#fab').onclick = () => openSheet(null);
-  document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => { view = b.dataset.v; render(); window.scrollTo(0, 0); });
+  document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => { view = b.dataset.v; render(); scroller().scrollTop = 0; });
 
   /* ================= Démarrage ================= */
   load();
@@ -1162,7 +1185,7 @@
   setInterval(tick, 30000);
   setInterval(() => { if (!document.hidden) { syncServer(); loadPlan(); } }, 120000);
   // iOS : après le clavier ou un retour sur l'app, les barres fixes peuvent rester décalées → on force un recalage
-  const settle = () => { const y = window.scrollY; window.scrollTo(0, y + 1); window.scrollTo(0, y); };
+  const settle = () => { if (window.scrollY) window.scrollTo(0, 0); };      // la page elle-même ne doit jamais rester décalée (après le clavier)
   document.addEventListener('focusout', () => setTimeout(settle, 150));
   window.addEventListener('pageshow', () => setTimeout(settle, 100));
   if (window.visualViewport) window.visualViewport.addEventListener('resize', () => setTimeout(settle, 150));
