@@ -1,7 +1,7 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.11-27';
+  const VERSION = '2026.11.11-29';
   const API = 'https://second-cerveau-api.second-cerveau-api.workers.dev'; // ton serveur Cloudflare (adresse publique, sans secret)
   const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
@@ -342,11 +342,11 @@
     if (m.status) { if (!s) { s = el('div', { class: 'st' }); n.append(s); } s.textContent = m.status; } else if (s) s.remove();
     if (stick) toBottom();
   }
-  async function aiStream(text) {
+  async function aiStream(text, docPage) {
     const m = { r: 'a', t: '', ts: Date.now(), id: 'm' + Date.now().toString(36), ai: true, stream: true };
     S.chat.push(m); aiBusy = true; const ctl = new AbortController(); aiCtl = ctl; render();
     try {
-      let page = null, msg = text;
+      let page = docPage || null, msg = text;
       const url = (text.match(/https?:\/\/[^\s<>"')]+/) || [])[0];
       if (url) {                                                   // lecture de la page que TU as envoyée
         m.status = '🌐 Je lis la page…'; paint(m);
@@ -412,6 +412,81 @@
     const r = await Tesseract.recognize(source, 'fra');
     return r.data.text || '';
   }
+  /* ---------- Autres formats (lus sur le téléphone, sans rien envoyer) ----------
+     Word (.docx), Excel (.xlsx), PowerPoint (.pptx), OpenDocument (.odt/.ods/.odp), ePub, ancien Word (.doc),
+     RTF, texte, CSV, HTML, mail (.eml), agenda (.ics), contact (.vcf), JSON… */
+  async function unzip(buf) {                                      // mini-lecteur ZIP (les fichiers Office sont des ZIP de XML)
+    const dv = new DataView(buf), u8 = new Uint8Array(buf), files = {};
+    let eocd = -1;
+    for (let i = buf.byteLength - 22; i >= Math.max(0, buf.byteLength - 70000); i--) if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+    if (eocd < 0) throw new Error('fichier abîmé');
+    let p = dv.getUint32(eocd + 16, true); const n = dv.getUint16(eocd + 10, true);
+    for (let k = 0; k < n; k++) {
+      if (dv.getUint32(p, true) !== 0x02014b50) break;
+      const method = dv.getUint16(p + 10, true), csize = dv.getUint32(p + 20, true), nl = dv.getUint16(p + 28, true), xl = dv.getUint16(p + 30, true), cl2 = dv.getUint16(p + 32, true), off = dv.getUint32(p + 42, true);
+      const name = new TextDecoder().decode(u8.subarray(p + 46, p + 46 + nl));
+      files[name] = async () => {
+        const start = off + 30 + dv.getUint16(off + 26, true) + dv.getUint16(off + 28, true), data = u8.subarray(start, start + csize);
+        if (method === 0) return new TextDecoder().decode(data);
+        if (method !== 8 || typeof DecompressionStream === 'undefined') throw new Error('compression non gérée');
+        return new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).text();
+      };
+      p += 46 + nl + xl + cl2;
+    }
+    return files;
+  }
+  const xmlText = (x, para) => x.replace(new RegExp('</(' + para + ')>', 'g'), '\n').replace(/<w:tab\/>|<text:tab\/>/g, ' ').replace(/<w:br\/>|<text:line-break\/>|<a:br\/>/g, '\n')
+    .replace(/<[^>]+>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&').replace(/[ \t]+/g, ' ').replace(/\n\s*\n+/g, '\n');
+  const htmlText = h => h.replace(/<style[\s\S]*?<\/style>|<script[\s\S]*?<\/script>/gi, ' ').replace(/<(br|\/p|\/div|\/tr|\/li|\/h\d)[^>]*>/gi, '\n').replace(/<\/t[dh]>/gi, ' | ')
+    .replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;|&apos;/g, "'").replace(/&quot;/g, '"').replace(/[ \t]+/g, ' ').replace(/\n\s*\n+/g, '\n');
+  async function readOffice(buf) {
+    const z = await unzip(buf), names = Object.keys(z), get = n => z[n] ? z[n]() : Promise.resolve('');
+    const num = n => +((n.match(/(\d+)\.xml$/) || [])[1] || 0);
+    if (z['word/document.xml']) return xmlText(await get('word/document.xml'), 'w:p');
+    if (z['xl/workbook.xml']) {                                    // Excel : chaque feuille, ligne par ligne
+      const ss = z['xl/sharedStrings.xml'] ? [...(await get('xl/sharedStrings.xml')).matchAll(/<si>([\s\S]*?)<\/si>/g)].map(m => xmlText(m[1], 'x').trim()) : [];
+      let out = '';
+      for (const sh of names.filter(n => /^xl\/worksheets\/sheet\d+\.xml$/.test(n)).sort((a, b) => num(a) - num(b)).slice(0, 6)) {
+        out += '\n# Feuille ' + num(sh) + '\n';
+        for (const row of [...(await get(sh)).matchAll(/<row[^>]*>([\s\S]*?)<\/row>/g)].slice(0, 400)) {
+          const cells = [...row[1].matchAll(/<c([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)].map(c => {
+            const v = ((c[2] || '').match(/<v>([\s\S]*?)<\/v>/) || [])[1], is = ((c[2] || '').match(/<is>([\s\S]*?)<\/is>/) || [])[1];
+            return /t="s"/.test(c[1]) ? (ss[+v] || '') : is ? xmlText(is, 'x').trim() : (v || '');
+          });
+          if (cells.some(Boolean)) out += cells.join(' | ') + '\n';
+        }
+      }
+      return out;
+    }
+    if (names.some(n => /^ppt\/slides\/slide\d+\.xml$/.test(n))) {  // PowerPoint : texte de chaque diapo
+      let out = '';
+      for (const sl of names.filter(n => /^ppt\/slides\/slide\d+\.xml$/.test(n)).sort((a, b) => num(a) - num(b)).slice(0, 60)) out += '\n# Diapo ' + num(sl) + '\n' + xmlText(await get(sl), 'a:p');
+      return out;
+    }
+    if (z['content.xml']) return xmlText(await get('content.xml'), 'text:p|text:h|table:table-row');   // LibreOffice / Pages exporté
+    const pages = names.filter(n => /\.x?html?$/i.test(n)).slice(0, 40);                                // ePub
+    if (pages.length) { let out = ''; for (const n of pages) out += htmlText(await get(n)) + '\n'; return out; }
+    throw new Error('archive sans texte lisible');
+  }
+  function oldWord(u8) {                                           // ancien .doc : on récupère les morceaux de texte lisibles
+    const t16 = new TextDecoder('utf-16le').decode(u8.subarray(0, u8.length - (u8.length % 2)));
+    const runs = t16.match(/[\p{L}\p{N}\p{P}\p{Zs}\r\n€$]{6,}/gu) || [];
+    let txt = runs.filter(r => /\p{L}{3,}/u.test(r)).join('\n');
+    if (txt.length < 80) txt = (new TextDecoder('latin1').decode(u8).match(/[\x20-\x7e\xc0-\xff\r\n]{8,}/g) || []).join('\n');
+    return txt;
+  }
+  async function readOther(file) {
+    const buf = await file.arrayBuffer(), u8 = new Uint8Array(buf), name = (file.name || '').toLowerCase();
+    if (u8[0] === 0x50 && u8[1] === 0x4b) return readOffice(buf);                                         // ZIP (docx, xlsx, pptx, odt, epub…)
+    if (u8[0] === 0xd0 && u8[1] === 0xcf && u8[2] === 0x11 && u8[3] === 0xe0) return oldWord(u8);          // ancien Office (.doc, .xls…)
+    let txt = new TextDecoder('utf-8').decode(u8);
+    if (txt.includes('�') && !/\.(txt|csv|md)$/.test(name)) txt = new TextDecoder('windows-1252').decode(u8);
+    if (/^\s*\{\\rtf/.test(txt)) return txt.replace(/\\par[d]?/g, '\n').replace(/\{\\\*[^{}]*\}|\\[a-z]+-?\d* ?|[{}]/gi, '').replace(/\n\s*\n+/g, '\n');   // RTF
+    if (/^\s*</.test(txt) && /<(html|body|div|p)\b/i.test(txt)) return htmlText(txt);                      // page web
+    const bad = (txt.slice(0, 4000).match(/[\x00-\x08\x0e-\x1f]/g) || []).length;
+    if (bad > 20) throw new Error('format non reconnu');
+    return txt;                                                    // texte, CSV, JSON, mail .eml, agenda .ics, contact .vcf…
+  }
   async function readFile(file, quiet) {
     if (file.type === 'application/pdf' || /\.pdf$/i.test(file.name)) {
       await loadScript(PDFJS + 'pdf.min.js');
@@ -436,7 +511,7 @@
       return txt;
     }
     if (/^image\//.test(file.type)) { if (!quiet) { say('Je lis la photo (ça peut prendre une minute)…', true); render(); } return ocr(file); }
-    throw new Error('Format non géré (PDF ou photo seulement).');
+    return readOther(file);
   }
   async function handleFile(file) {
     S.chat.push({ r: 'u', t: '📎 ' + file.name, ts: Date.now() });
@@ -444,6 +519,12 @@
     try {
       const txt = await readFile(file);
       if (txt.replace(/\s/g, '').length < 15) { say("Je n'ai pas réussi à lire de texte. Essaie une photo plus nette, bien éclairée.", true); save(); render(); return; }
+      if (aiReady()) {                                             // l'IA lit le texte extrait : résumé, dates, montants, choses à faire
+        S.chat = S.chat.filter(x => !(x.r === 'a' && /^Je lis le document/.test(x.t || '')));
+        aiStream(`Voici le document « ${file.name} » que je viens d'ajouter. Résume-le clairement, relève les dates, montants, personnes et choses à faire, et propose les actions utiles (tâches, envoi).`,
+          { url: 'fichier : ' + file.name, title: file.name, text: txt.replace(/[ \t]+/g, ' ').slice(0, 7000) });
+        return;
+      }
       const d = E.extractDoc(txt);
       const kinds = { train: '🚆 Billet de train', facture: '🧾 Facture', rdv: '📌 Convocation / rendez-vous', doc: '📄 Document' };
       const lines2 = [`${kinds[d.kind]} — voici ce que j'ai trouvé :`, `• ${d.title}`, d.date ? `• Date : ${dayLabel(d.date)}${d.time ? ' à ' + d.time : ''}` : '• Aucune date trouvée', d.notes && '• ' + d.notes].filter(Boolean);
@@ -534,7 +615,7 @@
         if (ib.length) {
           for (const m of ib) {
             if (m.file) {                                              // PDF / photo partagé : lu sur le téléphone
-              const ext = /pdf/.test(m.file.mime) ? 'pdf' : (m.file.mime.split('/')[1] || 'bin');
+              const ext = /pdf/.test(m.file.mime) ? 'pdf' : /wordprocessing/.test(m.file.mime) ? 'docx' : /spreadsheet/.test(m.file.mime) ? 'xlsx' : /presentation/.test(m.file.mime) ? 'pptx' : (m.file.mime.split('/')[1] || 'bin').slice(0, 10);
               let d = null;
               try {
                 const r = await fetch(`${API}/api/inbox/file?id=${encodeURIComponent(m.id)}`, { headers: { Authorization: 'Bearer ' + S.srvToken } });
@@ -617,7 +698,7 @@
     try {
       let ch = false;
       for (const m of (S.mail || []).slice(0, 4)) {
-        if (!(m.atts || []).some(a => /pdf/i.test(a.mime)) || (S.mailDoc && S.mailDoc[m.id])) continue;
+        if (!(m.atts || []).some(a => /pdf|word|document|sheet|presentation|text\/|rtf/i.test(a.mime)) || (S.mailDoc && S.mailDoc[m.id])) continue;
         await readMailAtts(m); ch = true;
       }
       if (ch) { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} render(); }
@@ -1014,7 +1095,7 @@
     };
     input.oninput = () => { chatDraft = input.value; grow(); };
     input.onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } };
-    const fileIn = el('input', { type: 'file', accept: 'application/pdf,image/*', id: 'filein', style: 'display:none' });
+    const fileIn = el('input', { type: 'file', accept: 'application/pdf,image/*,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.odp,.rtf,.txt,.csv,.md,.html,.htm,.eml,.ics,.vcf,.json,.epub,.pages', id: 'filein', style: 'display:none' });
     fileIn.onchange = () => { const f = fileIn.files[0]; if (f) handleFile(f); };
     const clip = el('button', { class: 'mic', type: 'button', 'aria-label': 'Ajouter un document', text: '📎', onclick: () => fileIn.click() });
     const sendBtn = aiBusy ? el('button', { class: 'send stop', type: 'button', 'aria-label': 'Arrêter', text: '■', onclick: () => { if (aiCtl) aiCtl.abort(); } })
@@ -1127,11 +1208,94 @@
         }, text: 'Restaurer' })), bmsg));
   }
 
+  /* ---------- Agenda : vue calendrier façon Google Agenda (3 jours avec les heures, ou mois) ---------- */
+  let calDate = null, calMode = '3j';
+  const calColor = x => x.ro ? (x.cat === 'Cours' ? 'cal-c' : 'cal-e') : isLate(x) ? 'cal-l' : 'cal-t';
+  const shiftDate = (ds, n) => { const d = new Date(ds + 'T12:00'); d.setDate(d.getDate() + n); return E.dstr(d); };
+  const calItems = ds => [...visibleEvents().filter(e => e.date === ds && prioOf(e) !== 'low'), ...open().filter(i => i.date === ds)];
+  function calOpen(x) {
+    if (!x.ro) { openSheet(x); return; }
+    toast(`${x.title} · ${dayLabel(x.date)}${x.time ? ' ' + x.time : ''}${x.endTime ? '–' + x.endTime : ''}${x.loc ? ' · ' + x.loc : ''}`);
+  }
+  const calChip = x => el('button', { type: 'button', class: 'tl-chip ' + calColor(x), text: x.title, onclick: () => calOpen(x) });
+  function renderCal(v) {
+    const td = today(); calDate = calDate || td;
+    const title = new Date(calDate + 'T12:00').toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+    const go = n => {
+      if (calMode === 'mois') { const d = new Date(calDate + 'T12:00'); d.setDate(1); d.setMonth(d.getMonth() + n); calDate = E.dstr(d); }
+      else calDate = shiftDate(calDate, n * 3);
+      render();
+    };
+    v.append(el('div', { class: 'top' },
+      el('div', {}, el('div', { class: 'date', text: 'Agenda' }), el('h1', { class: 'calh', text: title.charAt(0).toUpperCase() + title.slice(1) })),
+      el('div', { class: 'seg' }, ...[['3j', '3 jours'], ['mois', 'Mois']].map(([k, t]) =>
+        el('button', { type: 'button', class: calMode === k ? 'on' : '', text: t, onclick: () => { calMode = k; render(); } })))));
+    v.append(el('div', { class: 'calnav' },
+      el('button', { class: 'chip', type: 'button', 'aria-label': 'Précédent', text: '‹', onclick: () => go(-1) }),
+      el('button', { class: 'chip', type: 'button', text: "Aujourd'hui", onclick: () => { calDate = td; render(); } }),
+      el('button', { class: 'chip', type: 'button', 'aria-label': 'Suivant', text: '›', onclick: () => go(1) })));
+    let sx = null;                                                 // glisser à gauche / à droite pour changer de période
+    const swipe = n => { n.addEventListener('touchstart', e => { sx = e.touches[0].clientX; }, { passive: true });
+      n.addEventListener('touchend', e => { if (sx == null) return; const dx = e.changedTouches[0].clientX - sx; sx = null; if (Math.abs(dx) > 70) go(dx < 0 ? 1 : -1); }); return n; };
+    if (calMode === 'mois') { v.append(swipe(renderMonth(td))); return; }
+    const days = [0, 1, 2].map(k => shiftDate(calDate, k));
+    v.append(el('div', { class: 'tl-head' }, el('div', { class: 'tl-gut' }), ...days.map(ds => {
+      const d = new Date(ds + 'T12:00');
+      return el('div', { class: 'tl-dh' + (ds === td ? ' now' : '') }, el('small', { text: d.toLocaleDateString('fr-FR', { weekday: 'short' }) }), el('b', { text: String(d.getDate()) }));
+    })));
+    const allday = days.map(ds => calItems(ds).filter(x => toMin(x.time) == null));
+    if (allday.some(a => a.length)) v.append(el('div', { class: 'tl-all' }, el('div', { class: 'tl-gut', text: 'journée' }), ...allday.map(a => el('div', { class: 'tl-ac' }, ...a.map(calChip)))));
+    let h0 = 7, h1 = 23;
+    for (const ds of days) for (const x of calItems(ds)) {
+      const s = toMin(x.time); if (s == null) continue;
+      const e = toMin(x.endTime); h0 = Math.min(h0, Math.floor(s / 60)); h1 = Math.max(h1, Math.ceil((e != null && e > s ? e : s + 60) / 60));
+    }
+    h1 = Math.min(24, h1);
+    const PX = 52, grid = el('div', { class: 'tl', style: `height:${(h1 - h0) * PX}px` }), gut = el('div', { class: 'tl-gut tl-hours' });
+    for (let h = h0 + 1; h < h1; h++) gut.append(el('div', { class: 'tl-hl', style: `top:${(h - h0) * PX}px`, text: h + ' h' }));
+    grid.append(gut);
+    for (const ds of days) {
+      const col = el('div', { class: 'tl-col' + (ds === td ? ' today' : '') });
+      for (let h = h0 + 1; h < h1; h++) col.append(el('div', { class: 'tl-line', style: `top:${(h - h0) * PX}px` }));
+      const items = calItems(ds).filter(x => toMin(x.time) != null).map(x => {
+        const s = toMin(x.time), e = toMin(x.endTime);
+        return { x, s, e: x.ro ? (e != null && e > s ? e : s + 60) : s + 30 };     // une tâche = une échéance : petit bloc de 30 min
+      }).sort((a, b) => a.s - b.s || b.e - a.e);
+      const groups = []; let grp = [], gEnd = -1;                  // éléments qui se chevauchent : côte à côte, comme Google
+      for (const it of items) { if (grp.length && it.s >= gEnd) { groups.push(grp); grp = []; gEnd = -1; } grp.push(it); gEnd = Math.max(gEnd, it.e); }
+      if (grp.length) groups.push(grp);
+      for (const g of groups) { const lanes = []; for (const it of g) { let l = lanes.findIndex(end => end <= it.s); if (l < 0) { l = lanes.length; lanes.push(0); } lanes[l] = it.e; it.lane = l; } g.forEach(it => { it.n = lanes.length; }); }
+      for (const it of items) {
+        const top = (it.s - h0 * 60) / 60 * PX, hgt = Math.max(22, (it.e - it.s) / 60 * PX - 2);
+        col.append(el('button', { type: 'button', class: 'tl-ev ' + calColor(it.x) + (it.x.ro ? '' : ' task'), style: `top:${top}px;height:${hgt}px;left:calc(${it.lane / it.n * 100}% + 1px);width:calc(${100 / it.n}% - 2px)`, onclick: () => calOpen(it.x) },
+          el('b', { text: (it.x.ro ? '' : '◯ ') + it.x.title }), hgt > 40 && el('small', { text: it.x.time + (it.x.ro && it.x.endTime ? '–' + it.x.endTime : '') + (it.x.loc ? ' · ' + it.x.loc : '') })));
+      }
+      if (ds === td) { const n = new Date(), nm = n.getHours() * 60 + n.getMinutes(); if (nm >= h0 * 60 && nm <= h1 * 60) col.append(el('div', { class: 'tl-now', style: `top:${(nm - h0 * 60) / 60 * PX}px` })); }
+      grid.append(col);
+    }
+    v.append(swipe(grid));
+    v.append(el('div', { class: 'calleg' }, ...[['cal-c', 'Cours'], ['cal-e', 'Événement'], ['cal-t', 'Tâche'], ['cal-l', 'En retard']].map(([c, t]) => el('span', {}, el('i', { class: c }), t))));
+  }
+  function renderMonth(td) {
+    const d = new Date(calDate + 'T12:00'); d.setDate(1);
+    const m = d.getMonth(), start = new Date(d); start.setDate(1 - ((d.getDay() + 6) % 7));
+    const g = el('div', { class: 'mo' });
+    for (const w of ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim']) g.append(el('div', { class: 'mo-w', text: w }));
+    for (let k = 0; k < 42; k++) {
+      const c = new Date(start); c.setDate(start.getDate() + k);
+      if (k % 7 === 0 && k >= 28 && c.getMonth() !== m) break;
+      const ds = E.dstr(c), its = calItems(ds).sort(byTime);
+      g.append(el('button', { type: 'button', class: 'mo-d' + (c.getMonth() !== m ? ' out' : '') + (ds === td ? ' now' : ''), onclick: () => { calDate = ds; calMode = '3j'; render(); } },
+        el('b', { text: String(c.getDate()) }), ...its.slice(0, 3).map(x => el('span', { class: 'mo-e ' + calColor(x), text: x.title })), its.length > 3 && el('small', { text: '+' + (its.length - 3) })));
+    }
+    return g;
+  }
+
   function render() {
     const v = $('#view'); const keep = document.activeElement && document.activeElement.id === 'chatin';
     const scrollY = v.scrollTop;
     v.innerHTML = '';
-    ({ home: renderHome, brain: renderBrain, chat: renderChat, settings: renderSettings })[view](v);
+    ({ home: renderHome, cal: renderCal, brain: renderBrain, chat: renderChat, settings: renderSettings })[view](v);
     document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.v === view));
     $('#fab').hidden = view === 'chat' || view === 'settings';
     if (view !== 'chat') v.scrollTop = scrollY;
@@ -1171,7 +1335,7 @@
     } else S.items.unshift(mk(f));
     save(); closeSheet(); render();
   };
-  $('#fab').onclick = () => openSheet(null);
+  $('#fab').onclick = () => { openSheet(null); if (view === 'cal' && calDate) $('#s-date').value = calDate; };   // depuis l'agenda : le jour affiché est prérempli
   document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => { view = b.dataset.v; render(); scroller().scrollTop = 0; });
 
   /* ================= Démarrage ================= */
