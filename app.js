@@ -1,7 +1,7 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.10-25';
+  const VERSION = '2026.11.11-26';
   const API = 'https://second-cerveau-api.second-cerveau-api.workers.dev'; // ton serveur Cloudflare (adresse publique, sans secret)
   const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
@@ -698,6 +698,88 @@
   }
   const section = (title, items, cls) => items.length ? [el('h2', { class: cls || '', text: `${title} (${items.length})` }), ...items.map(row)] : [];
 
+  /* ---------- Assistant proactif ----------
+     1) le RADAR : des règles de code (jamais l'IA) repèrent conflits d'horaires, retards, heures bizarres → fiable
+     2) les INITIATIVES : l'IA regarde tout et propose 2-4 actions utiles ; le serveur vérifie les id, les dates et les doublons,
+        l'app vérifie les conflits, et rien ne se fait sans ton bouton */
+  const toMin = t => { const m = /^(\d{2}):(\d{2})$/.exec(t || ''); return m ? +m[1] * 60 + +m[2] : null; };
+  const fromMin = n => String(Math.floor(n / 60)).padStart(2, '0') + ':' + String(n % 60).padStart(2, '0');
+  function conflictOf(date, time, ignoreId) {                    // qu'y a-t-il déjà à ce moment ? (cours, événement ou autre tâche)
+    const t = toMin(time); if (!date || t == null) return null;
+    for (const e of visibleEvents()) {
+      if (e.date !== date || prioOf(e) === 'low' || e.id === ignoreId) continue;
+      const s = toMin(e.time); if (s == null) continue;
+      const f = toMin(e.endTime) != null ? toMin(e.endTime) : s + 60;
+      if (t >= s && t < f) return { kind: 'event', title: e.title, end: f };
+    }
+    for (const i of open()) {
+      if (i.id === ignoreId || i.date !== date || toMin(i.time) == null) continue;
+      if (Math.abs(toMin(i.time) - t) < 30) return { kind: 'task', title: i.title, id: i.id };
+    }
+    return null;
+  }
+  function radar() {
+    const out = [], now = Date.now(), pairs = new Set();
+    const dated = open().filter(i => i.date);
+    for (const i of dated) {
+      if (isLate(i) || !i.time) continue;
+      const c = conflictOf(i.date, i.time, i.id); if (!c) continue;
+      if (c.kind === 'task') { const k = [i.id, c.id].sort().join('|'); if (pairs.has(k)) continue; pairs.add(k); }
+      const nt = c.kind === 'event' && c.end <= 21 * 60 ? fromMin(c.end) : null;
+      out.push({ key: 'c' + i.id, icon: '⚠️', text: `« ${i.title.slice(0, 40)} » tombe ${c.kind === 'event' ? 'pendant' : 'en même temps que'} « ${c.title.slice(0, 40)} » (${dayLabel(i.date)}, ${i.time}).`,
+        actions: nt ? [{ type: 'move', id: i.id, date: i.date, time: nt }] : [] });
+    }
+    for (const i of dated) {
+      const t = toMin(i.time); if (isLate(i) || t == null || (t >= 7 * 60 && t < 23 * 60)) continue;
+      out.push({ key: 'n' + i.id, icon: '🌙', text: `« ${i.title.slice(0, 40)} » est prévue à ${i.time} (${dayLabel(i.date)}) : c'est bien voulu ?`, actions: [{ type: 'move', id: i.id, date: i.date, time: '09:00' }] });
+    }
+    const td = today(), tm = E.dstr(addDays(1));
+    for (const i of dated.filter(isLate).sort(byTime).slice(0, 3)) {
+      const evening = new Date().getHours() < 19;
+      out.push({ key: 'l' + i.id, icon: '⏰', text: `« ${i.title.slice(0, 50)} » est en retard (${rel(E.dueAt(i))}).`,
+        actions: [evening ? { type: 'move', id: i.id, date: td, time: '20:00' } : { type: 'move', id: i.id, date: tm, time: '09:00' }] });
+    }
+    for (let k = 0; k < 3; k++) {                                // journée surchargée
+      const ds = E.dstr(addDays(k)); let mins = 0;
+      for (const e of visibleEvents()) if (e.date === ds && prioOf(e) !== 'low' && toMin(e.time) != null) mins += (toMin(e.endTime) != null ? toMin(e.endTime) : toMin(e.time) + 60) - toMin(e.time);
+      const n = dated.filter(i => i.date === ds && !i.done).length;
+      if (mins >= 360 && n >= 3) out.push({ key: 'h' + ds, icon: '🥵', text: `${dayLabel(ds)} est chargé : ${Math.round(mins / 60)} h de cours/événements et ${n} tâches. Pense à décaler ce qui peut l'être.`, actions: [] });
+    }
+    return out.slice(0, 6);
+  }
+  let planBusy = false;
+  async function loadPlan(force) {
+    if (planBusy || !aiReady() || new Date().getHours() < 6) return;
+    const td = today(), p = S.plan;
+    if (!force && p && ((p.day === td && Date.now() - p.ts < 6 * H) || (p.fail && Date.now() - p.fail < 15 * 60e3))) return;
+    planBusy = true; render();
+    try {
+      const r = await srv('/api/ai/plan', { context: aiContext(), radar: radar().map(x => x.text) });
+      if (!r.ok) throw new Error(r.reason || 'IA indisponible');
+      S.plan = { day: td, ts: Date.now(), items: (r.initiatives || []).map(o => ({ icon: o.icon, text: o.text, prop: o.action ? { type: 'ai', actions: [o.action], doneIdx: [] } : null })) };
+    } catch (e) { S.plan = { ...(S.plan || {}), fail: Date.now(), err: e.message }; }
+    finally { planBusy = false; save(); render(); }
+  }
+  function renderAssistant(v) {
+    if (!aiReady() && !radar().length) return;
+    const rd = radar(), pl = S.plan && S.plan.day === today() ? (S.plan.items || []).filter(x => !x.hidden && !(x.prop && (x.prop.doneIdx || []).length)) : [];
+    const rdIds = new Set(rd.flatMap(r => r.actions.map(x => x.id)).filter(Boolean));
+    for (let k = pl.length - 1; k >= 0; k--) { const a0 = pl[k].prop && pl[k].prop.actions[0]; if (a0 && a0.id && rdIds.has(a0.id)) pl.splice(k, 1); }   // déjà couvert par le radar
+    if (!rd.length && !pl.length && !planBusy) return;
+    const card = el('div', { class: 'ast' }, el('div', { class: 'asth' }, el('b', { text: '🧠 Ton assistant' }),
+      aiReady() && el('button', { class: 'chip', type: 'button', text: planBusy ? '…' : '↻ Actualiser', onclick: () => loadPlan(true) })));
+    if (planBusy && !pl.length) card.append(el('div', { class: 'ovl', text: 'Je regarde ton planning, tes mails et ton agenda…' }));
+    const rowFor = (icon, text, prop, onHide) => {
+      const b = el('div', { class: 'ai-i' }, el('div', { class: 'ait', text: icon + ' ' + text }));
+      if (prop) renderActions(b, { prop });
+      if (onHide) b.append(el('div', { class: 'chips', style: 'margin-top:8px' }, el('button', { class: 'chip', type: 'button', text: 'Pas maintenant', onclick: onHide })));
+      return b;
+    };
+    for (const r of rd) card.append(rowFor(r.icon, r.text, r.actions.length ? { type: 'ai', actions: r.actions, doneIdx: [] } : null));
+    for (const x of pl) card.append(rowFor(x.icon, x.text, x.prop, () => { x.hidden = true; save(); render(); }));
+    v.append(card);
+  }
+
   function renderHome(v) {
     const now = Date.now(), td = today(), h = new Date().getHours();
     v.append(el('div', { class: 'top' },
@@ -734,6 +816,7 @@
         el('div', { class: 'big', text: nxt ? nxt.title : 'Rien d’urgent 🎉' }),
         el('div', { class: 'when', text: nxt ? `${when(nxt)} · ${rel(E.dueAt(nxt))}` : 'Ajoute ce qui te trotte dans la tête avec le bouton +' })),
       ring));
+    renderAssistant(v);
 
     for (const it of open().filter(i => i.alertOpen && (!i.date || isLate(i) || E.dueAt(i) - now <= 3 * H))) {   // la carte « Fait » n'apparaît que si l'échéance est proche ou passée
       v.append(el('div', { class: 'alert' },
@@ -827,6 +910,10 @@
       const it = a.id ? S.items.find(i => i.id === a.id) : null;
       if (a.id && !it) return;
       if ((m.prop.doneIdx || []).includes(k)) { row.append(el('span', { class: 'hint', text: '✅ Fait' })); return; }
+      if ((a.type === 'add' || a.type === 'move') && a.date && a.time) {
+        const c = conflictOf(a.date, a.time, a.id);
+        if (c) b.append(el('div', { class: 'hint', style: 'margin-top:8px', text: `⚠️ ${dayLabel(a.date)} à ${a.time} : tu as déjà « ${c.title.slice(0, 40)} »${c.kind === 'event' ? ' (jusqu\'à ' + fromMin(c.end) + ')' : ''}.` }));
+      }
       if (a.type === 'note') b.append(el('div', { class: 'hint', style: 'white-space:pre-wrap;margin-top:8px', text: 'Texte ajouté : ' + a.text }));
       if (a.type === 'mail') {
         b.append(el('div', { class: 'hint', style: 'white-space:pre-wrap;margin-top:8px', text: (a.subject ? 'Objet : ' + a.subject + '\n\n' : '') + a.body }));
@@ -1073,7 +1160,13 @@
   if (gh) { say(gh[1] === 'ok' ? '📧 Gmail est connecté ! Je repère maintenant tes deadlines et les mails sans réponse.' : "La connexion à Gmail n'a pas abouti. Réessaie depuis Réglages → Mails (Gmail).", true); save(); try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {} }
   document.addEventListener('visibilitychange', () => { if (!document.hidden) { tick(); syncServer(); } });
   setInterval(tick, 30000);
-  setInterval(() => { if (!document.hidden) syncServer(); }, 120000);
+  setInterval(() => { if (!document.hidden) { syncServer(); loadPlan(); } }, 120000);
+  // iOS : après le clavier ou un retour sur l'app, les barres fixes peuvent rester décalées → on force un recalage
+  const settle = () => { const y = window.scrollY; window.scrollTo(0, y + 1); window.scrollTo(0, y); };
+  document.addEventListener('focusout', () => setTimeout(settle, 150));
+  window.addEventListener('pageshow', () => setTimeout(settle, 100));
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', () => setTimeout(settle, 150));
+  setTimeout(loadPlan, 3000);
   tick(); render(); syncServer();
   window.__app = { get S() { return S; }, ask, handleFile, render, tick, mk, setView: v => { view = v; render(); } }; // utile pour les tests
 })();

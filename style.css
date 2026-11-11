@@ -177,3 +177,11 @@ label input,label select{margin-top:5px;font-weight:400;font-size:17px}
 .ovl{color:var(--mut);font-size:14px;margin-bottom:6px}
 .ovl:only-of-type{animation:ovp 1.4s ease-in-out infinite}
 @keyframes ovp{50%{opacity:.45}}
+
+/* Ton assistant (accueil) */
+.ast{background:var(--card);border-radius:20px;padding:14px 16px;margin-top:12px;box-shadow:var(--shadow)}
+.asth{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+.asth b{font-size:17px}
+.ai-i{padding:12px 0;border-top:.5px solid var(--sep)}
+.ai-i:first-of-type{border-top:0}
+.ait{font-size:15px;line-height:1.4}
