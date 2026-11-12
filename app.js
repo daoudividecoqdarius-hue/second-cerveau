@@ -1,7 +1,7 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.11-29';
+  const VERSION = '2026.11.13-30';
   const API = 'https://second-cerveau-api.second-cerveau-api.workers.dev'; // ton serveur Cloudflare (adresse publique, sans secret)
   const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
@@ -354,8 +354,12 @@
         if (text.replace(url, '').trim().length < 3) msg = 'Résume cette page en quelques phrases et dis-moi s’il y a des dates ou des choses à faire.';
       }
       const history = S.chat.filter(x => x !== m && x.t && !x.err).slice(0, -1).slice(-10).map(x => ({ r: x.r, t: x.t }));
-      const res = await fetch(API + '/api/ai/stream', { method: 'POST', headers: { Authorization: 'Bearer ' + S.srvToken, 'Content-Type': 'application/json' }, signal: ctl.signal,
-        body: JSON.stringify({ message: msg, history, context: aiContext(), page }) });
+      // l'agent consulte lui-même les données du serveur : on les met à jour d'abord (3 s au plus), puis on lui pose la question
+      try { await Promise.race([syncServer(), new Promise(r => setTimeout(r, 3000))]); } catch (e) {}
+      const post = (route, ctx) => fetch(API + route, { method: 'POST', headers: { Authorization: 'Bearer ' + S.srvToken, 'Content-Type': 'application/json' }, signal: ctl.signal,
+        body: JSON.stringify({ message: msg, history, context: ctx, page }) });
+      let res = await post('/api/ai/agent', { memoire: (S.mem || []).slice(0, 40) });
+      if (!res.ok) res = await post('/api/ai/stream', aiContext());          // secours : l'ancien assistant si l'agent est indisponible
       if (!res.ok) throw new Error('Serveur ' + res.status);
       if (!(res.headers.get('Content-Type') || '').includes('ndjson')) { const j = await res.json().catch(() => ({})); throw new Error(j.reason === 'no-key' ? 'IA non configurée sur le serveur' : 'IA indisponible'); }
       m.status = ''; paint(m);
@@ -367,7 +371,7 @@
           const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (!line) continue;
           let ev; try { ev = JSON.parse(line); } catch (e) { continue; }
           if (ev.t) { m.t += ev.t; m.status = ''; paint(m); }
-          else if (ev.tool) { m.status = ev.tool === 'mail' ? '📬 Je cherche dans tes mails…' : '🌤️ Je consulte la météo…'; paint(m); }
+          else if (ev.tool) { m.status = { mail: '📬 Je cherche dans tes mails…', weather: '🌤️ Je consulte la météo…', chercher_taches: '🔎 Je consulte tes tâches…', lire_agenda: '📅 Je lis ton agenda…' }[ev.tool] || '…'; paint(m); }
           else if (ev.error) throw new Error(ev.error);
           else if (ev.done) { fin = true; if (ev.actions && ev.actions.length) m.prop = { type: 'ai', actions: ev.actions }; }
         }
@@ -378,13 +382,29 @@
       else { m.err = /failed to fetch|load failed|network/i.test(e.message) ? 'Pas de connexion internet' : e.message; m.retry = text; }
     } finally { m.stream = false; aiBusy = false; aiCtl = null; save(); render(); }
   }
+  /* Applique une action validée par un bouton ; renvoie de quoi l'annuler (gardé dans le journal) */
   function applyAction(a) {
-    if (a.type === 'add') { S.items.unshift(mk({ title: a.title, date: a.date, time: a.time, imp: a.importance, notes: a.notes || '', cat: a.notes ? 'Note' : 'Autre' })); return; }
-    if (a.type === 'note') { const t = S.items.find(i => i.id === a.id); if (t) t.notes = ((t.notes || '') ? t.notes + '\n\n' : '') + a.text; return; }
-    if (a.type === 'remember') { S.mem = [...new Set([...(S.mem || []), a.text])].slice(-40); return; }
-    const it = S.items.find(i => i.id === a.id); if (!it) return;
-    if (a.type === 'done') complete(it);
-    else if (a.type === 'move') { it.date = a.date; it.time = a.time || ''; it.lastNotified = Date.now(); it.alertOpen = false; it.snoozeUntil = 0; }
+    if (a.type === 'add') { const t = mk({ title: a.title, date: a.date, time: a.time, imp: a.importance, notes: a.notes || '', cat: a.notes ? 'Note' : 'Autre' }); S.items.unshift(t); return { label: `Ajouté : ${a.title}`, undo: { k: 'add', id: t.id } }; }
+    if (a.type === 'note') { const t = S.items.find(i => i.id === a.id); if (!t) return null; const old = t.notes || ''; t.notes = (old ? old + '\n\n' : '') + a.text; return { label: `Note ajoutée à « ${t.title.slice(0, 40)} »`, undo: { k: 'notes', id: t.id, old } }; }
+    if (a.type === 'remember') { const old = [...(S.mem || [])]; S.mem = [...new Set([...old, a.text])].slice(-40); return { label: `Retenu : ${a.text.slice(0, 50)}`, undo: { k: 'mem', old } }; }
+    const it = S.items.find(i => i.id === a.id); if (!it) return null;
+    if (a.type === 'done') { const prev = { done: it.done, doneAt: it.doneAt, alertOpen: it.alertOpen }; complete(it); return { label: `Terminé : ${it.title.slice(0, 50)}`, undo: { k: 'fields', id: it.id, old: prev } }; }
+    if (a.type === 'move') { const prev = { date: it.date, time: it.time, lastNotified: it.lastNotified, alertOpen: it.alertOpen, snoozeUntil: it.snoozeUntil }; it.date = a.date; it.time = a.time || ''; it.lastNotified = Date.now(); it.alertOpen = false; it.snoozeUntil = 0; return { label: `Déplacé : ${it.title.slice(0, 40)} → ${dayLabel(a.date)}${a.time ? ' ' + a.time : ''}`, undo: { k: 'fields', id: it.id, old: prev } }; }
+    return null;
+  }
+  /* Journal : les 40 dernières actions de l'assistant, avec « Annuler » */
+  function runAction(a) {
+    const r = applyAction(a); if (!r) return;
+    S.journal = [{ id: 'j' + Date.now().toString(36), ts: Date.now(), label: r.label, undo: r.undo }, ...(S.journal || [])].slice(0, 40);
+    save(); render(); toast('✓ ' + r.label.slice(0, 60));
+  }
+  function undoEntry(e) {
+    const u = e.undo || {};
+    if (u.k === 'add') S.items = S.items.filter(i => i.id !== u.id);
+    else if (u.k === 'notes') { const t = S.items.find(i => i.id === u.id); if (t) t.notes = u.old; }
+    else if (u.k === 'mem') S.mem = u.old;
+    else if (u.k === 'fields') { const t = S.items.find(i => i.id === u.id); if (t) Object.assign(t, u.old); }
+    S.journal = (S.journal || []).filter(x => x.id !== e.id); save(); render(); toast('↩︎ Annulé');
   }
   function ask(text) {
     text = text.trim(); if (!text || aiBusy) return;
@@ -1035,7 +1055,7 @@
         : a.type === 'note' ? (m.short ? '📝 Ajouter aux notes' : `📝 Ajouter aux notes de « ${it.title.slice(0, 28)} »`)
         : a.type === 'done' ? (m.short ? '✅ C’est fait' : `✅ Terminer « ${it.title.slice(0, 40)} »`)
         : m.short ? `📅 Déplacer à ${a.date === today() ? "aujourd'hui" : dayLabel(a.date)}${a.time ? ' ' + a.time : ''}` : `📅 Déplacer « ${it.title.slice(0, 30)} » → ${dayLabel(a.date)}${a.time ? ' ' + a.time : ''}`;
-      row.append(el('button', { class: 'chip p', onclick: () => { applyAction(a); (m.prop.doneIdx = m.prop.doneIdx || []).push(k); save(); render(); }, text: label }));
+      row.append(el('button', { class: 'chip p', onclick: () => { runAction(a); (m.prop.doneIdx = m.prop.doneIdx || []).push(k); save(); render(); }, text: label }));
     });
     if (row.childNodes.length) b.append(row);
   }
@@ -1132,6 +1152,10 @@
     v.append(el('div', { class: 'card' }, el('h3', { text: '🧠 Ce que je sais de toi' }),
       el('p', { text: (S.mem || []).length ? 'Je m’en sers pour mieux t’aider (ces notes sont envoyées à l’IA avec tes questions). Touche une note pour l’oublier.' : 'Rien pour l’instant. Dis par exemple « je suis végétarien » à l’assistant : il te proposera de le retenir.' }),
       el('div', { class: 'chips' }, ...(S.mem || []).map((t, i) => el('button', { class: 'chip', type: 'button', onclick: () => { S.mem.splice(i, 1); save(); render(); }, text: t.slice(0, 44) + ' ✕' })))));
+    v.append(el('div', { class: 'card' }, el('h3', { text: '📒 Journal de l’assistant' }),
+      el('p', { text: (S.journal || []).length ? 'Ce que tu as validé avec les boutons de l’assistant. Tu peux annuler chaque action.' : 'Rien pour l’instant. Chaque action que tu valides avec un bouton apparaîtra ici, avec un bouton pour l’annuler.' }),
+      ...(S.journal || []).slice(0, 12).map(e => el('div', { class: 'jr' }, el('div', {}, el('div', { text: e.label }), el('small', { class: 'hint', text: new Date(e.ts).toLocaleString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) })),
+        el('button', { class: 'chip', type: 'button', text: '↩︎ Annuler', onclick: () => undoEntry(e) })))));
     v.append(el('div', { class: 'card' }, el('h3', { text: '☁️ Serveur & rappels app fermée' }),
       el('p', { text: S.srvToken ? `Serveur appairé${S.srvSync ? ' · dernière synchro ' + rel(S.srvSync) : ''}. Il t'envoie tes rappels même quand l'app est fermée et lit ton planning de l'école.${S.srvErr ? ' (dernière erreur : ' + S.srvErr + ')' : ''}` : "Pas encore appairé. Colle ci-dessous le code d'appairage que ton assistant t'a envoyé." }),
       !S.srvToken && el('div', { class: 'inline', style: 'margin-bottom:10px' },
