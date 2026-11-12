@@ -247,3 +247,21 @@ label input,label select{margin-top:5px;font-weight:400;font-size:17px}
 
 .jr{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 0;border-top:.5px solid var(--sep);font-size:15px}
 .jr .chip{flex:none}
+
+/* Listes : courses, sport */
+.seg.full{display:flex;width:100%;margin:-4px 0 14px}
+.seg.full button{flex:1;padding:9px 4px;font-size:15px}
+.addrow{display:flex;gap:10px;align-items:center;margin-bottom:6px}
+.add-in{flex:1;min-width:0;border:0;background:var(--card);border-radius:14px;padding:14px 16px;font-size:17px;color:var(--txt)}
+.addrow .send{flex:none}
+.group{background:var(--card);border-radius:16px;overflow:hidden}
+.crow{display:flex;align-items:center;gap:13px;padding:12px 14px;border-top:.5px solid var(--sep);min-height:52px}
+.crow:first-child{border-top:0}
+.crow .cn{flex:1;min-width:0;font-size:17px;overflow-wrap:anywhere}
+.crow.done .cn{color:var(--mut);text-decoration:line-through}
+.crow .x{border:0;background:none;color:var(--mut);font-size:16px;padding:10px;margin:-8px -6px -8px 0}
+.mini{border:0;background:rgba(255,255,255,.25);color:#fff;border-radius:50%;width:28px;height:28px;font-size:18px;line-height:1;vertical-align:middle}
+/* Boutons plus faciles à toucher */
+.chip{min-height:40px}
+.chk{min-width:28px;min-height:28px}
+#tabs button{min-height:48px}

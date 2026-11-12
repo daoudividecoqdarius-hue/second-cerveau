@@ -1,7 +1,7 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.13-30';
+  const VERSION = '2026.11.13-31';
   const API = 'https://second-cerveau-api.second-cerveau-api.workers.dev'; // ton serveur Cloudflare (adresse publique, sans secret)
   const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
@@ -371,7 +371,7 @@
           const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (!line) continue;
           let ev; try { ev = JSON.parse(line); } catch (e) { continue; }
           if (ev.t) { m.t += ev.t; m.status = ''; paint(m); }
-          else if (ev.tool) { m.status = { mail: '📬 Je cherche dans tes mails…', weather: '🌤️ Je consulte la météo…', chercher_taches: '🔎 Je consulte tes tâches…', lire_agenda: '📅 Je lis ton agenda…' }[ev.tool] || '…'; paint(m); }
+          else if (ev.tool) { m.status = { mail: '📬 Je cherche dans tes mails…', weather: '🌤️ Je consulte la météo…', chercher_taches: '🔎 Je consulte tes tâches…', lire_agenda: '📅 Je lis ton agenda…', lire_courses: '🛒 Je regarde ta liste…', lire_sport: '💪 Je regarde ton sport…' }[ev.tool] || '…'; paint(m); }
           else if (ev.error) throw new Error(ev.error);
           else if (ev.done) { fin = true; if (ev.actions && ev.actions.length) m.prop = { type: 'ai', actions: ev.actions }; }
         }
@@ -384,7 +384,8 @@
   }
   /* Applique une action validée par un bouton ; renvoie de quoi l'annuler (gardé dans le journal) */
   function applyAction(a) {
-    if (a.type === 'add') { const t = mk({ title: a.title, date: a.date, time: a.time, imp: a.importance, notes: a.notes || '', cat: a.notes ? 'Note' : 'Autre' }); S.items.unshift(t); return { label: `Ajouté : ${a.title}`, undo: { k: 'add', id: t.id } }; }
+    if (a.type === 'courses') { const added = addCourses(a.items || []); if (!added.length) return { label: 'Courses : tout était déjà sur ta liste', undo: { k: 'courses', ids: [] } }; return { label: `Courses : +${added.length} article${added.length > 1 ? 's' : ''}`, undo: { k: 'courses', ids: added.map(c => c.id) } }; }
+    if (a.type === 'add') { const t = mk({ title: a.title, date: a.date, time: a.time, imp: a.importance, notes: a.notes || '', cat: a.cat || (a.notes ? 'Note' : 'Autre') }); S.items.unshift(t); return { label: `Ajouté : ${a.title}`, undo: { k: 'add', id: t.id } }; }
     if (a.type === 'note') { const t = S.items.find(i => i.id === a.id); if (!t) return null; const old = t.notes || ''; t.notes = (old ? old + '\n\n' : '') + a.text; return { label: `Note ajoutée à « ${t.title.slice(0, 40)} »`, undo: { k: 'notes', id: t.id, old } }; }
     if (a.type === 'remember') { const old = [...(S.mem || [])]; S.mem = [...new Set([...old, a.text])].slice(-40); return { label: `Retenu : ${a.text.slice(0, 50)}`, undo: { k: 'mem', old } }; }
     const it = S.items.find(i => i.id === a.id); if (!it) return null;
@@ -401,6 +402,7 @@
   function undoEntry(e) {
     const u = e.undo || {};
     if (u.k === 'add') S.items = S.items.filter(i => i.id !== u.id);
+    else if (u.k === 'courses') S.courses = (S.courses || []).filter(c => !(u.ids || []).includes(c.id));
     else if (u.k === 'notes') { const t = S.items.find(i => i.id === u.id); if (t) t.notes = u.old; }
     else if (u.k === 'mem') S.mem = u.old;
     else if (u.k === 'fields') { const t = S.items.find(i => i.id === u.id); if (t) Object.assign(t, u.old); }
@@ -619,8 +621,8 @@
     if (!S.srvToken || syncing || navigator.onLine === false) return;
     syncing = true;
     try {
-      const items = S.items.map(i => ({ id: i.id, title: i.title, date: i.date, time: i.time, imp: i.imp, done: !!i.done, created: i.created, lastNotified: i.lastNotified, lastAlertAt: i.lastAlertAt, alertOpen: !!i.alertOpen, snoozeUntil: i.snoozeUntil }));
-      const res = await srv('/api/sync', { items, rf: S.rf });
+      const items = S.items.map(i => ({ id: i.id, title: i.title, cat: i.cat, notes: (i.notes || '').slice(0, 300), date: i.date, time: i.time, imp: i.imp, done: !!i.done, doneAt: i.doneAt, created: i.created, lastNotified: i.lastNotified, lastAlertAt: i.lastAlertAt, alertOpen: !!i.alertOpen, snoozeUntil: i.snoozeUntil }));
+      const res = await srv('/api/sync', { items, rf: S.rf, courses: (S.courses || []).slice(0, 150).map(c => ({ t: c.t, r: c.r, done: !!c.done })), sportGoal: S.sportGoal || 3 });
       let ch = false;
       for (const it of S.items) {
         const ts = res.alerts && res.alerts[it.id];
@@ -992,8 +994,8 @@
     if (!S.items.length && !S.events.length) v.append(el('div', { class: 'empty', text: "Rien pour l'instant. Appuie sur + ou parle à l'assistant : « Rappelle-moi de… »" }));
   }
 
-  function renderBrain(v) {
-    v.append(el('div', { class: 'top' }, el('div', {}, el('div', { class: 'date', text: 'Tout ce que tu m’as confié' }), el('h1', { text: 'Mémoire 🧠' }))));
+  function renderBrain(v, noTop) {
+    if (!noTop) v.append(el('div', { class: 'top' }, el('div', {}, el('div', { class: 'date', text: 'Tout ce que tu m’as confié' }), el('h1', { text: 'Mémoire 🧠' }))));
     const inp = el('input', { type: 'search', placeholder: 'Rechercher dans tout…', value: view_q });
     const out = el('div');
     const draw = () => {
@@ -1034,6 +1036,7 @@
         if (c) b.append(el('div', { class: 'hint', style: 'margin-top:8px', text: `⚠️ ${dayLabel(a.date)} à ${a.time} : tu as déjà « ${c.title.slice(0, 40)} »${c.kind === 'event' ? ' (jusqu\'à ' + fromMin(c.end) + ')' : ''}.` }));
       }
       if (a.type === 'note') b.append(el('div', { class: 'hint', style: 'white-space:pre-wrap;margin-top:8px', text: 'Texte ajouté : ' + a.text }));
+      if (a.type === 'courses') { b.append(el('div', { class: 'hint', style: 'white-space:pre-wrap;margin-top:8px', text: (a.items || []).map(x => '• ' + x.t).join('\n') })); row.append(el('button', { class: 'chip p', type: 'button', text: `🛒 Ajouter ${a.items.length} article${a.items.length > 1 ? 's' : ''} aux courses`, onclick: () => { runAction(a); (m.prop.doneIdx = m.prop.doneIdx || []).push(k); save(); render(); } })); return; }
       if (a.type === 'share') { row.append(el('button', { class: 'chip p', type: 'button', text: `📤 Envoyer « ${a.title.slice(0, 28)} »`, onclick: () => shareOut(a.title, a.text) })); return; }
       if (a.type === 'mail') {
         b.append(el('div', { class: 'hint', style: 'white-space:pre-wrap;margin-top:8px', text: (a.subject ? 'Objet : ' + a.subject + '\n\n' : '') + a.body }));
@@ -1152,6 +1155,9 @@
     v.append(el('div', { class: 'card' }, el('h3', { text: '🧠 Ce que je sais de toi' }),
       el('p', { text: (S.mem || []).length ? 'Je m’en sers pour mieux t’aider (ces notes sont envoyées à l’IA avec tes questions). Touche une note pour l’oublier.' : 'Rien pour l’instant. Dis par exemple « je suis végétarien » à l’assistant : il te proposera de le retenir.' }),
       el('div', { class: 'chips' }, ...(S.mem || []).map((t, i) => el('button', { class: 'chip', type: 'button', onclick: () => { S.mem.splice(i, 1); save(); render(); }, text: t.slice(0, 44) + ' ✕' })))));
+    v.append(el('div', { class: 'card' }, el('h3', { text: '🔠 Taille du texte' }),
+      el('p', { text: 'Pour lire plus confortablement.' }),
+      el('div', { class: 'chips' }, ...[[100, 'Normal'], [115, 'Grand'], [130, 'Très grand']].map(([p, t]) => el('button', { class: 'chip' + ((S.textPct || 100) === p ? ' p' : ''), type: 'button', text: t, onclick: () => { S.textPct = p; applyTextSize(); save(); render(); } })))));
     v.append(el('div', { class: 'card' }, el('h3', { text: '📒 Journal de l’assistant' }),
       el('p', { text: (S.journal || []).length ? 'Ce que tu as validé avec les boutons de l’assistant. Tu peux annuler chaque action.' : 'Rien pour l’instant. Chaque action que tu valides avec un bouton apparaîtra ici, avec un bouton pour l’annuler.' }),
       ...(S.journal || []).slice(0, 12).map(e => el('div', { class: 'jr' }, el('div', {}, el('div', { text: e.label }), el('small', { class: 'hint', text: new Date(e.ts).toLocaleString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) })),
@@ -1232,6 +1238,68 @@
         }, text: 'Restaurer' })), bmsg));
   }
 
+  /* ---------- Onglet « Listes » : Courses · Sport · Idées (une seule app, plusieurs modules) ---------- */
+  let listTab = 'courses';
+  const RAYONS = ['Fruits & légumes', 'Frais', 'Épicerie', 'Boissons', 'Viande & poisson', 'Surgelés', 'Hygiène & maison', 'Autre'];
+  const RAYON_RE = [[/pomme|banane|orange|citron|poire|fraise|tomate|salade|courgette|carotte|oignon|ail\b|pomme de terre|poivron|concombre|avocat|champignon|legume|fruit|courge|brocoli|epinard|persil|coriandre|basilic|aubergine|haricot vert/, 'Fruits & légumes'],
+    [/lait|beurre|oeuf|œuf|yaourt|fromage|creme|mozzarella|jambon|tofu|skyr|feta|gruyere|parmesan/, 'Frais'],
+    [/poulet|boeuf|bœuf|steak|poisson|saumon|thon|crevette|dinde|porc|viande|lardon/, 'Viande & poisson'],
+    [/pates|pâtes|riz|farine|sucre|huile|conserve|lentille|pois chiche|cereale|céréale|pain|biscuit|chocolat|sauce|epice|sel\b|poivre|semoule|quinoa|noix|miel|confiture|cafe|café|the\b|thé/, 'Épicerie'],
+    [/eau|jus|soda|biere|bière|vin|boisson|sirop/, 'Boissons'],
+    [/surgele|surgelé|glace|pizza/, 'Surgelés'],
+    [/savon|shampoing|dentifrice|papier|lessive|eponge|éponge|sac poubelle|liquide vaisselle|mouchoir|deodorant|déodorant/, 'Hygiène & maison']];
+  const rayonOf = t => { const n = E.norm(t); for (const [re, r] of RAYON_RE) if (re.test(n)) return r; return 'Autre'; };
+  function addCourses(list) {                                       // list : [{t, r?}] ; renvoie les articles réellement ajoutés (pas de doublon)
+    S.courses = S.courses || []; const added = [];
+    for (const x of list) {
+      const t = String(x.t || '').trim().slice(0, 60); if (!t) continue;
+      if (S.courses.some(c => !c.done && E.norm(c.t) === E.norm(t))) continue;
+      const c = { id: 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), t, r: x.r && RAYONS.includes(x.r) ? x.r : rayonOf(t), done: false };
+      S.courses.push(c); added.push(c);
+    }
+    return added;
+  }
+  function renderCourses(v) {
+    S.courses = S.courses || [];
+    const inp = el('input', { type: 'text', placeholder: 'Ajouter : lait, 6 œufs, pâtes…', enterkeyhint: 'done', autocapitalize: 'sentences', class: 'add-in' });
+    const add = () => { const parts = inp.value.split(/[,;\n]+/).map(s => s.trim()).filter(Boolean); if (!parts.length) return; addCourses(parts.map(t => ({ t }))); inp.value = ''; save(); render(); setTimeout(() => { const i = $('.add-in'); if (i) i.focus(); }, 30); };
+    inp.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); add(); } };
+    v.append(el('div', { class: 'addrow' }, inp, el('button', { class: 'send', type: 'button', 'aria-label': 'Ajouter', text: '＋', onclick: add })));
+    const todo = S.courses.filter(c => !c.done), done = S.courses.filter(c => c.done);
+    const line = c => el('div', { class: 'crow' + (c.done ? ' done' : '') },
+      el('button', { class: 'chk' + (c.done ? ' on' : ''), type: 'button', 'aria-label': c.done ? 'Remettre' : 'Pris', text: c.done ? '✓' : '', onclick: () => { c.done = !c.done; save(); render(); } }),
+      el('div', { class: 'cn', text: c.t, onclick: () => { c.done = !c.done; save(); render(); } }),
+      el('button', { class: 'x', type: 'button', 'aria-label': 'Supprimer', text: '✕', onclick: () => { S.courses = S.courses.filter(z => z !== c); save(); render(); } }));
+    if (!S.courses.length) v.append(el('div', { class: 'empty', text: 'Ta liste est vide. Ajoute des articles ci-dessus, ou demande à l’assistant : « fais-moi une liste de courses pour 3 dîners ».' }));
+    for (const r of RAYONS) { const l = todo.filter(c => c.r === r); if (l.length) v.append(el('h2', { text: `${r} (${l.length})` }), el('div', { class: 'group' }, ...l.map(line))); }
+    if (done.length) v.append(el('h2', { text: `Dans le panier (${done.length})` }), el('div', { class: 'group' }, ...done.map(line)));
+    v.append(el('div', { class: 'chips', style: 'margin-top:16px' },
+      todo.length && el('button', { class: 'chip p', type: 'button', text: '📤 Envoyer la liste', onclick: () => shareOut('Liste de courses', RAYONS.map(r => { const l = todo.filter(c => c.r === r); return l.length ? r.toUpperCase() + '\n' + l.map(c => '- ' + c.t).join('\n') : ''; }).filter(Boolean).join('\n\n')) }),
+      aiReady() && el('button', { class: 'chip', type: 'button', text: '✨ Compléter avec l’assistant', onclick: () => { view = 'chat'; render(); ask('Regarde ma liste de courses et mon planning de la semaine, dis-moi ce qui manque probablement et propose les articles à ajouter.'); } }),
+      done.length && el('button', { class: 'chip g', type: 'button', text: '🧹 Vider le panier', onclick: () => { S.courses = S.courses.filter(c => !c.done); save(); render(); } })));
+  }
+  const weekStart = () => { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d.getTime(); };
+  function renderSport(v) {
+    const goal = S.sportGoal || 3, sport = S.items.filter(i => i.cat === 'Sport'), ws = weekStart();
+    const doneW = sport.filter(i => i.done && (i.doneAt || 0) >= ws).length, td = today();
+    const pct = Math.min(1, doneW / goal), C = 2 * Math.PI * 26, ring = el('div', { class: 'ring' });
+    ring.innerHTML = `<svg width="64" height="64" viewBox="0 0 64 64"><circle cx="32" cy="32" r="26" fill="none" stroke="rgba(255,255,255,.3)" stroke-width="7"/><circle cx="32" cy="32" r="26" fill="none" stroke="#fff" stroke-width="7" stroke-linecap="round" stroke-dasharray="${C}" stroke-dashoffset="${C * (1 - pct)}"/></svg>`;
+    ring.append(el('b', { text: `${doneW}/${goal}` }));
+    v.append(el('div', { class: 'focus' }, el('div', { class: 'l' }, el('small', { text: 'Objectif de la semaine' }),
+      el('div', { class: 'big', text: doneW >= goal ? 'Objectif atteint 💪' : `${goal - doneW} séance${goal - doneW > 1 ? 's' : ''} à faire` }),
+      el('div', { class: 'when' }, 'Objectif : ', el('button', { class: 'mini', type: 'button', text: '−', onclick: () => { S.sportGoal = Math.max(1, goal - 1); save(); render(); } }), ` ${goal} par semaine `, el('button', { class: 'mini', type: 'button', text: '+', onclick: () => { S.sportGoal = Math.min(14, goal + 1); save(); render(); } }))), ring));
+    v.append(el('div', { class: 'chips', style: 'margin:14px 0 4px' },
+      el('button', { class: 'chip p', type: 'button', text: '＋ Séance', onclick: () => { openSheet(null); $('#s-cat').value = 'Sport'; $('#s-title').value = ''; $('#s-hint').textContent = 'Ex : Jambes jeudi 18h. Mets les exercices dans les notes.'; } }),
+      aiReady() && el('button', { class: 'chip', type: 'button', text: '✨ Programme par l’assistant', onclick: () => { view = 'chat'; render(); ask('Propose-moi un programme de sport pour cette semaine adapté à mon planning, avec les exercices détaillés, et ajoute les séances à mon planning sur des créneaux libres.'); } })));
+    const next = sport.filter(i => !i.done && (!i.date || i.date >= td)).sort(byTime), late = sport.filter(i => !i.done && i.date && i.date < td), hist = sport.filter(i => i.done).sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0)).slice(0, 10);
+    v.append(...section('En retard', late, 'red'), ...section('À venir', next), ...section('Fait récemment', hist));
+    if (!sport.length) v.append(el('div', { class: 'empty', text: 'Aucune séance pour l’instant. Ajoute-en une, ou demande un programme à l’assistant.' }));
+  }
+  function renderLists(v) {
+    v.append(el('div', { class: 'top' }, el('div', {}, el('div', { class: 'date', text: 'Tes modules' }), el('h1', { text: 'Listes' }))));
+    v.append(el('div', { class: 'seg full' }, ...[['courses', '🛒 Courses'], ['sport', '💪 Sport'], ['idees', '💡 Idées']].map(([k, t]) => el('button', { type: 'button', class: listTab === k ? 'on' : '', text: t, onclick: () => { listTab = k; render(); } }))));
+    if (listTab === 'courses') renderCourses(v); else if (listTab === 'sport') renderSport(v); else renderBrain(v, true);
+  }
   /* ---------- Agenda : vue calendrier façon Google Agenda (3 jours avec les heures, ou mois) ---------- */
   let calDate = null, calMode = '3j';
   const calColor = x => x.ro ? (x.cat === 'Cours' ? 'cal-c' : 'cal-e') : isLate(x) ? 'cal-l' : 'cal-t';
@@ -1319,7 +1387,7 @@
     const v = $('#view'); const keep = document.activeElement && document.activeElement.id === 'chatin';
     const scrollY = v.scrollTop;
     v.innerHTML = '';
-    ({ home: renderHome, cal: renderCal, brain: renderBrain, chat: renderChat, settings: renderSettings })[view](v);
+    ({ home: renderHome, cal: renderCal, lists: renderLists, chat: renderChat, settings: renderSettings })[view in { home: 1, cal: 1, lists: 1, chat: 1, settings: 1 } ? view : 'home'](v);
     document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.v === view));
     $('#fab').hidden = view === 'chat' || view === 'settings';
     if (view !== 'chat') v.scrollTop = scrollY;
@@ -1360,6 +1428,8 @@
     save(); closeSheet(); render();
   };
   $('#fab').onclick = () => { openSheet(null); if (view === 'cal' && calDate) $('#s-date').value = calDate; };   // depuis l'agenda : le jour affiché est prérempli
+  const applyTextSize = () => { document.documentElement.style.webkitTextSizeAdjust = document.documentElement.style.textSizeAdjust = (S.textPct || 100) + '%'; };
+  applyTextSize();
   document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => { view = b.dataset.v; render(); scroller().scrollTop = 0; });
 
   /* ================= Démarrage ================= */
