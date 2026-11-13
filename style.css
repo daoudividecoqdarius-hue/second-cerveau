@@ -265,3 +265,24 @@ label input,label select{margin-top:5px;font-weight:400;font-size:17px}
 .chip{min-height:40px}
 .chk{min-width:28px;min-height:28px}
 #tabs button{min-height:48px}
+
+/* Coffre, avis, sources, Siri, présentation */
+.secret-line{display:flex;align-items:center;gap:10px;font-size:15px;color:var(--mut);margin:10px 2px 4px}
+.secret-line input{width:22px;height:22px;flex:none}
+.used{color:var(--mut);font-size:12.5px;margin-top:8px}
+.fbr{display:flex;gap:6px;margin-top:6px}
+.fbr button{border:0;background:var(--fill);border-radius:99px;padding:4px 12px;font-size:15px;min-height:32px}
+.fb{display:flex;gap:8px;margin-top:8px}
+.fb-in{flex:1;min-width:0;border:0;background:var(--fill);border-radius:12px;padding:10px 12px;font-size:15px;color:var(--txt)}
+.steps{margin:10px 0 12px;padding-left:20px;font-size:15px;line-height:1.45}
+.steps li{margin:6px 0}
+.ob{position:fixed;inset:0;z-index:60;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);display:grid;place-items:center;padding:24px}
+.obc{width:100%;max-width:420px;background:var(--card);border-radius:28px;padding:28px 24px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.25);display:flex;flex-direction:column;align-items:center;gap:6px}
+.obi{font-size:56px;line-height:1.1}
+.obc h2{font-size:24px;font-weight:700;text-transform:none;letter-spacing:-.02em;color:var(--txt);margin:6px 0 0}
+.obc p{color:var(--mut);font-size:16px;line-height:1.45;margin:6px 0 10px}
+.obd{display:flex;gap:7px;margin:6px 0 14px}
+.obd i{width:8px;height:8px;border-radius:50%;background:var(--fill)}
+.obd i.on{background:var(--acc)}
+.obc .btn{width:100%}
+.skip{border:0;background:none;color:var(--mut);padding:10px;font-size:15px}

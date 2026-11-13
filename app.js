@@ -1,7 +1,7 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.13-31';
+  const VERSION = '2026.11.13-32';
   const API = 'https://second-cerveau-api.second-cerveau-api.workers.dev'; // ton serveur Cloudflare (adresse publique, sans secret)
   const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
@@ -286,8 +286,8 @@
   const aiReady = () => !!(S.aiOn && S.srvToken && navigator.onLine !== false);
   function aiContext() {
     const td = today(), lim = E.dstr(addDays(21));
-    const dated = open().filter(i => i.date).sort(byTime).slice(0, 40).map(i => ({ id: i.id, t: i.title.slice(0, 90), d: i.date, h: i.time, i: i.imp || 2, late: isLate(i) || undefined, quand: rel(E.dueAt(i)) }));
-    const ideas = open().filter(i => !i.date).slice(0, 10).map(i => ({ id: i.id, t: i.title.slice(0, 90), idea: true }));
+    const dated = open().filter(i => i.date).sort(byTime).slice(0, 40).map(i => ({ id: i.id, t: (i.secret ? '🔒 Privé' : i.title).slice(0, 90), d: i.date, h: i.time, i: i.imp || 2, late: isLate(i) || undefined, quand: rel(E.dueAt(i)) }));
+    const ideas = open().filter(i => !i.date).slice(0, 10).map(i => ({ id: i.id, t: (i.secret ? '🔒 Privé' : i.title).slice(0, 90), idea: true }));
     const evs = visibleEvents().filter(e => e.date >= td && e.date <= lim).sort(byTime).slice(0, 40).map(e => ({ t: e.title.slice(0, 90), d: e.date, h: e.time }));
     const mails = (S.mail || []).slice(0, 5).map(m => ({ t: (m.title || '').slice(0, 90), d: m.date || '' }));
     return { items: [...dated, ...ideas], events: evs, mails, memoire: (S.mem || []).slice(0, 40) };
@@ -373,16 +373,34 @@
           if (ev.t) { m.t += ev.t; m.status = ''; paint(m); }
           else if (ev.tool) { m.status = { mail: '📬 Je cherche dans tes mails…', weather: '🌤️ Je consulte la météo…', chercher_taches: '🔎 Je consulte tes tâches…', lire_agenda: '📅 Je lis ton agenda…', lire_courses: '🛒 Je regarde ta liste…', lire_sport: '💪 Je regarde ton sport…' }[ev.tool] || '…'; paint(m); }
           else if (ev.error) throw new Error(ev.error);
-          else if (ev.done) { fin = true; if (ev.actions && ev.actions.length) m.prop = { type: 'ai', actions: ev.actions }; }
+          else if (ev.done) { fin = true; m.used = ev.used || []; if (ev.actions && ev.actions.length) m.prop = { type: 'ai', actions: ev.actions }; }
         }
       }
       if (!fin && !m.t.trim()) throw new Error('réponse vide');
     } catch (e) {
       if (e.name === 'AbortError') { if (m.t.trim()) m.t += '\n\n_(arrêté)_'; else S.chat = S.chat.filter(x => x !== m); }
       else { m.err = /failed to fetch|load failed|network/i.test(e.message) ? 'Pas de connexion internet' : e.message; m.retry = text; }
-    } finally { m.stream = false; aiBusy = false; aiCtl = null; save(); render(); }
+    } finally { m.stream = false; aiBusy = false; aiCtl = null; save(); render(); if (!m.err && m.t) learnFrom(text, m); }
   }
   /* Applique une action validée par un bouton ; renvoie de quoi l'annuler (gardé dans le journal) */
+  /* Mémoire qui apprend : si ton message parle de toi, l'assistant PROPOSE (bouton 🧠) ce qu'il aurait retenu, avec pourquoi ; rien n'est enregistré sans toi */
+  const looksPersonal = t => t.length > 14 && /\b(je suis|j['’]ai|j['’]aime|je n['’]|je ne |je préfère|je prefere|je déteste|je deteste|je veux|je travaille|je mange|je fais|mon |ma |mes |nous )/i.test(t);
+  async function learnFrom(text, m) {
+    if (!aiReady() || !looksPersonal(text) || /^https?:/i.test(text)) return;
+    try {
+      const r = await srv('/api/ai/learn', { user: text, memory: S.mem || [] });
+      if (!r.ok || !(r.items || []).length) return;
+      const acts = r.items.map(x => ({ type: 'remember', text: x.text, why: x.why }));
+      m.prop = m.prop && m.prop.type === 'ai' ? { ...m.prop, actions: [...(m.prop.actions || []), ...acts] } : { type: 'ai', actions: acts, doneIdx: [] };
+      save(); render();
+    } catch (e) {}
+  }
+  const USED = { lire_agenda: 'agenda', chercher_taches: 'tâches', chercher_mails: 'mails', meteo: 'météo', lire_courses: 'courses', lire_sport: 'sport' };
+  async function sendFeedback(m, kind, note) {
+    const i = S.chat.indexOf(m), u = S.chat.slice(0, i).reverse().find(x => x.r === 'u');
+    m.fb = kind; save(); render();
+    try { await srv('/api/feedback', { kind, user: u ? u.t : '', reply: m.t, note: note || '' }); toast(kind === 'up' ? 'Merci !' : 'Merci, je m’en sers pour progresser'); } catch (e) {}
+  }
   function applyAction(a) {
     if (a.type === 'courses') { const added = addCourses(a.items || []); if (!added.length) return { label: 'Courses : tout était déjà sur ta liste', undo: { k: 'courses', ids: [] } }; return { label: `Courses : +${added.length} article${added.length > 1 ? 's' : ''}`, undo: { k: 'courses', ids: added.map(c => c.id) } }; }
     if (a.type === 'add') { const t = mk({ title: a.title, date: a.date, time: a.time, imp: a.importance, notes: a.notes || '', cat: a.cat || (a.notes ? 'Note' : 'Autre') }); S.items.unshift(t); return { label: `Ajouté : ${a.title}`, undo: { k: 'add', id: t.id } }; }
@@ -621,7 +639,7 @@
     if (!S.srvToken || syncing || navigator.onLine === false) return;
     syncing = true;
     try {
-      const items = S.items.map(i => ({ id: i.id, title: i.title, cat: i.cat, notes: (i.notes || '').slice(0, 300), date: i.date, time: i.time, imp: i.imp, done: !!i.done, doneAt: i.doneAt, created: i.created, lastNotified: i.lastNotified, lastAlertAt: i.lastAlertAt, alertOpen: !!i.alertOpen, snoozeUntil: i.snoozeUntil }));
+      const items = S.items.map(i => ({ id: i.id, title: i.secret ? '🔒 Privé' : i.title, cat: i.secret ? 'Privé' : i.cat, notes: i.secret ? '' : (i.notes || '').slice(0, 300), date: i.date, time: i.time, imp: i.imp, done: !!i.done, doneAt: i.doneAt, created: i.created, lastNotified: i.lastNotified, lastAlertAt: i.lastAlertAt, alertOpen: !!i.alertOpen, snoozeUntil: i.snoozeUntil }));
       const res = await srv('/api/sync', { items, rf: S.rf, courses: (S.courses || []).slice(0, 150).map(c => ({ t: c.t, r: c.r, done: !!c.done })), sportGoal: S.sportGoal || 3 });
       let ch = false;
       for (const it of S.items) {
@@ -803,7 +821,7 @@
     const left = ev ? el('span', { class: 'ico', text: '📅' })
       : el('button', { class: 'chk' + (it.done ? ' on' : ''), 'aria-label': 'Terminer', onclick: e => { e.stopPropagation(); it.done ? reopen(it) : complete(it); }, text: it.done ? '✓' : '' });
     const meta = el('div', { class: 'm' },
-      el('span', { class: 'tag', text: it.cat }),
+      el('span', { class: 'tag', text: (it.secret ? '🔒 ' : '') + it.cat }),
       it.date && el('span', { class: late ? 'late' : '', text: when(it) }),
       ev && it.cal && el('span', { text: it.cal }),
       !ev && !it.date && !it.done && it.nextReview && E.reviewDue(it, Date.now()) && el('span', { class: 'late', text: 'à revoir' }));
@@ -1035,6 +1053,7 @@
         const c = conflictOf(a.date, a.time, a.id);
         if (c) b.append(el('div', { class: 'hint', style: 'margin-top:8px', text: `⚠️ ${dayLabel(a.date)} à ${a.time} : tu as déjà « ${c.title.slice(0, 40)} »${c.kind === 'event' ? ' (jusqu\'à ' + fromMin(c.end) + ')' : ''}.` }));
       }
+      if (a.type === 'remember' && a.why) b.append(el('div', { class: 'hint', style: 'margin-top:8px', text: 'Je l’ai compris ainsi : ' + a.why }));
       if (a.type === 'note') b.append(el('div', { class: 'hint', style: 'white-space:pre-wrap;margin-top:8px', text: 'Texte ajouté : ' + a.text }));
       if (a.type === 'courses') { b.append(el('div', { class: 'hint', style: 'white-space:pre-wrap;margin-top:8px', text: (a.items || []).map(x => '• ' + x.t).join('\n') })); row.append(el('button', { class: 'chip p', type: 'button', text: `🛒 Ajouter ${a.items.length} article${a.items.length > 1 ? 's' : ''} aux courses`, onclick: () => { runAction(a); (m.prop.doneIdx = m.prop.doneIdx || []).push(k); save(); render(); } })); return; }
       if (a.type === 'share') { row.append(el('button', { class: 'chip p', type: 'button', text: `📤 Envoyer « ${a.title.slice(0, 28)} »`, onclick: () => shareOut(a.title, a.text) })); return; }
@@ -1082,6 +1101,14 @@
             : el('button', { class: 'chip p', onclick: () => { S.items.unshift(mk({ title: m.prop.title, date: m.prop.date, time: m.prop.time, imp: m.prop.imp, notes: m.prop.notes, cat: m.prop.cat })); m.prop.added = true; save(); render(); }, text: '➕ Ajouter au planning' })));
       } else if (m.prop && m.prop.type === 'mail') {
         b.append(el('div', { class: 'chips', style: 'margin-top:8px' }, ...mailButtons(m.prop.to, m.prop.subject, m.prop.body)));
+      }
+      if (m.ai && !m.stream && m.t) {
+        if ((m.used || []).some(n => USED[n])) b.append(el('div', { class: 'used', text: 'Consulté : ' + [...new Set(m.used.map(n => USED[n]).filter(Boolean))].join(' · ') }));
+        if (m.fb === 'open') {
+          const ta = el('input', { type: 'text', class: 'fb-in', placeholder: 'Qu’est-ce qui n’allait pas ? (facultatif)' });
+          b.append(el('div', { class: 'fb' }, ta, el('button', { class: 'chip p', type: 'button', text: 'Envoyer', onclick: () => sendFeedback(m, 'down', ta.value.trim()) })));
+        } else if (!m.fb) b.append(el('div', { class: 'fbr' }, el('button', { type: 'button', 'aria-label': 'Bonne réponse', text: '👍', onclick: () => sendFeedback(m, 'up') }), el('button', { type: 'button', 'aria-label': 'Mauvaise réponse', text: '👎', onclick: () => { m.fb = 'open'; render(); } })));
+        else b.append(el('div', { class: 'used', text: m.fb === 'up' ? '👍 Merci' : '👎 Noté, merci' }));
       }
       if (m.ai && !m.stream && m.t && m.t.length > 160) b.append(el('div', { class: 'cps' },
         el('button', { class: 'cp', type: 'button', text: 'Copier', onclick: e => {
@@ -1144,6 +1171,34 @@
     } catch (e) { say2("Impossible de vérifier : es-tu connecté à internet ?"); }
   }
 
+  function copyText(t, label) { try { navigator.clipboard.writeText(t).then(() => toast(label + ' copié ✓'), () => toast('Copie impossible : sélectionne le texte')); } catch (e) { toast('Copie impossible : sélectionne le texte'); } }
+  function siriShow(box, r) {
+    box.innerHTML = '';
+    box.append(el('ol', { class: 'steps' },
+      el('li', { text: 'Ouvre l’app Raccourcis → + (nouveau raccourci) → nomme-le « Demande à mon assistant ».' }),
+      el('li', { text: 'Ajoute l’action « Demander une saisie » (type : Texte, invite : « Que veux-tu savoir ? »).' }),
+      el('li', { text: 'Ajoute « Obtenir le contenu de l’URL » : colle le lien ci-dessous, Méthode : POST, En-têtes : Authorization = « Bearer » + espace + le jeton, Corps de la requête : Fichier = « Saisie fournie ».' }),
+      el('li', { text: 'Ajoute « Énoncer le texte » avec « Contenu de l’URL ». C’est tout : dis « Dis Siri, Demande à mon assistant ».' })),
+      el('div', { class: 'chips' }, el('button', { class: 'chip', type: 'button', text: '📋 Copier le lien', onclick: () => copyText(r.url, 'Lien') }),
+        el('button', { class: 'chip', type: 'button', text: '📋 Copier le jeton', onclick: () => copyText(r.token, 'Jeton') }),
+        el('button', { class: 'chip g', type: 'button', text: '♻️ Renouveler le jeton', onclick: async () => { try { const n = await srv('/api/ask-token', { renew: true }); siriShow(box, n); toast('Nouveau jeton : refais le Raccourci'); } catch (x) { toast('Échec'); } } })),
+      el('p', { class: 'hint', text: 'Ce jeton ne sert qu’à poser des questions (il ne peut rien modifier). Si tu perds ton téléphone, renouvelle-le : l’ancien Raccourci cesse de marcher.' }));
+  }
+  /* Première utilisation guidée : 3 écrans */
+  function showOnboarding() {
+    const steps = [['👋', 'Ton assistant personnel', 'Je t’aide à ne rien oublier : tâches, agenda, mails, courses, sport. Je connais ton planning et j’apprends à te connaître.'],
+      ['💬', 'Parle-moi normalement', 'Va dans l’onglet Assistant et écris ou dicte, par exemple : « qu’est-ce que j’ai demain ? », « ajoute du lait aux courses », « retrouve le lien de mon concert dans mes mails ».'],
+      ['✅', 'Tu gardes la main', 'Je te propose toujours des boutons : rien ne change sans ton accord, tout est dans le journal (Réglages) avec un bouton Annuler. Je ne paie jamais rien.']];
+    let k = 0; const wrap = el('div', { class: 'ob' }); document.body.append(wrap);
+    const draw = () => {
+      const [ic, t, p] = steps[k]; wrap.innerHTML = '';
+      wrap.append(el('div', { class: 'obc' }, el('div', { class: 'obi', text: ic }), el('h2', { text: t }), el('p', { text: p }),
+        el('div', { class: 'obd' }, ...steps.map((_, j) => el('i', { class: j === k ? 'on' : '' }))),
+        el('button', { class: 'btn', type: 'button', text: k < 2 ? 'Suivant' : 'Commencer', onclick: () => { if (k < 2) { k++; draw(); } else { S.onboarded = true; save(); wrap.remove(); } } }),
+        k < 2 && el('button', { class: 'skip', type: 'button', text: 'Passer', onclick: () => { S.onboarded = true; save(); wrap.remove(); } })));
+    };
+    draw();
+  }
   function renderSettings(v) {
     v.append(el('div', { class: 'top' }, el('div', {}, el('div', { class: 'date', text: 'Personnalise ton cerveau' }), el('h1', { text: 'Réglages ⚙️' }))));
     v.append(el('div', { class: 'card' }, el('h3', { text: '🔄 Mise à jour' }),
@@ -1155,6 +1210,16 @@
     v.append(el('div', { class: 'card' }, el('h3', { text: '🧠 Ce que je sais de toi' }),
       el('p', { text: (S.mem || []).length ? 'Je m’en sers pour mieux t’aider (ces notes sont envoyées à l’IA avec tes questions). Touche une note pour l’oublier.' : 'Rien pour l’instant. Dis par exemple « je suis végétarien » à l’assistant : il te proposera de le retenir.' }),
       el('div', { class: 'chips' }, ...(S.mem || []).map((t, i) => el('button', { class: 'chip', type: 'button', onclick: () => { S.mem.splice(i, 1); save(); render(); }, text: t.slice(0, 44) + ' ✕' })))));
+    v.append(el('div', { class: 'card' }, el('h3', { text: '🎙️ Parler à ton assistant avec Siri' }),
+      el('p', { text: 'Crée un Raccourci « Demande à mon assistant » : tu dis « Dis Siri, demande à mon assistant ce que j’ai demain » et il te répond à voix haute. Il lit tes tâches et ton agenda, mais ne modifie rien.' }),
+      el('div', { class: 'chips' },
+        el('button', { class: 'chip p', type: 'button', text: 'Afficher les réglages Siri', onclick: async e => {
+          const b = e.target, box = $('#siribox'); b.textContent = '…';
+          try { const r = await srv('/api/ask-token', {}); b.textContent = 'Afficher les réglages Siri'; siriShow(box, r); } catch (x) { b.textContent = 'Afficher les réglages Siri'; box.textContent = 'Impossible pour l’instant : ' + x.message; }
+        } })),
+      el('div', { id: 'siribox' })));
+    v.append(el('div', { class: 'card' }, el('h3', { text: '👋 Présentation' }),
+      el('p', { text: 'Revoir les trois écrans de bienvenue.' }), el('div', { class: 'chips' }, el('button', { class: 'chip', type: 'button', text: 'Revoir', onclick: () => showOnboarding() }))));
     v.append(el('div', { class: 'card' }, el('h3', { text: '🔠 Taille du texte' }),
       el('p', { text: 'Pour lire plus confortablement.' }),
       el('div', { class: 'chips' }, ...[[100, 'Normal'], [115, 'Grand'], [130, 'Très grand']].map(([p, t]) => el('button', { class: 'chip' + ((S.textPct || 100) === p ? ' p' : ''), type: 'button', text: t, onclick: () => { S.textPct = p; applyTextSize(); save(); render(); } })))));
@@ -1400,6 +1465,7 @@
     editing = it || null;
     $('#sheettitle').textContent = it ? 'Modifier' : 'Nouvelle entrée';
     $('#s-title').value = it ? it.title : ''; $('#s-date').value = it ? it.date : ''; $('#s-time').value = it ? it.time : '';
+    $('#s-secret').checked = !!(it && it.secret);
     $('#s-imp').value = it ? it.imp : 2; $('#s-cat').value = it ? it.cat : 'Autre'; $('#s-notes').value = it ? it.notes || '' : '';
     $('#s-del').hidden = !it; $('#s-share').hidden = !it; $('#sheetwrap').hidden = false;
     setTimeout(() => $('#s-title').focus(), 50);
@@ -1419,7 +1485,7 @@
     e.preventDefault();
     let title = $('#s-title').value.trim(), date = $('#s-date').value, time = $('#s-time').value, imp = +$('#s-imp').value;
     if (!date && !time) { const p = E.parse(title); if (p.title && (p.date || p.time)) { title = p.title; date = p.date || ''; time = p.time || ''; if (p.imp === 3) imp = 3; } }
-    const f = { title, date, time, imp, cat: $('#s-cat').value, notes: $('#s-notes').value.trim() };
+    const f = { title, date, time, imp, cat: $('#s-cat').value, notes: $('#s-notes').value.trim(), secret: $('#s-secret').checked };
     if (editing) {
       if (f.date !== editing.date || f.time !== editing.time) { editing.lastNotified = Date.now(); editing.alertOpen = false; editing.snoozeUntil = 0; }
       Object.assign(editing, f);
@@ -1427,6 +1493,7 @@
     } else S.items.unshift(mk(f));
     save(); closeSheet(); render();
   };
+  if (!S.onboarded && S.items.length < 6) setTimeout(showOnboarding, 600); else if (!S.onboarded) { S.onboarded = true; save(); }
   $('#fab').onclick = () => { openSheet(null); if (view === 'cal' && calDate) $('#s-date').value = calDate; };   // depuis l'agenda : le jour affiché est prérempli
   const applyTextSize = () => { document.documentElement.style.webkitTextSizeAdjust = document.documentElement.style.textSizeAdjust = (S.textPct || 100) + '%'; };
   applyTextSize();
