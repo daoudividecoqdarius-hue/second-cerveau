@@ -1,7 +1,7 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.13-32';
+  const VERSION = '2026.11.13-33';
   const API = 'https://second-cerveau-api.second-cerveau-api.workers.dev'; // ton serveur Cloudflare (adresse publique, sans secret)
   const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
@@ -371,7 +371,7 @@
           const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (!line) continue;
           let ev; try { ev = JSON.parse(line); } catch (e) { continue; }
           if (ev.t) { m.t += ev.t; m.status = ''; paint(m); }
-          else if (ev.tool) { m.status = { mail: '📬 Je cherche dans tes mails…', weather: '🌤️ Je consulte la météo…', chercher_taches: '🔎 Je consulte tes tâches…', lire_agenda: '📅 Je lis ton agenda…', lire_courses: '🛒 Je regarde ta liste…', lire_sport: '💪 Je regarde ton sport…' }[ev.tool] || '…'; paint(m); }
+          else if (ev.tool) { m.status = { mail: '📬 Je cherche dans tes mails…', weather: '🌤️ Je consulte la météo…', chercher_taches: '🔎 Je consulte tes tâches…', lire_frigo: '🧊 Je regarde ton frigo…', lire_agenda: '📅 Je lis ton agenda…', lire_courses: '🛒 Je regarde ta liste…', lire_sport: '💪 Je regarde ton sport…' }[ev.tool] || '…'; paint(m); }
           else if (ev.error) throw new Error(ev.error);
           else if (ev.done) { fin = true; m.used = ev.used || []; if (ev.actions && ev.actions.length) m.prop = { type: 'ai', actions: ev.actions }; }
         }
@@ -395,13 +395,14 @@
       save(); render();
     } catch (e) {}
   }
-  const USED = { lire_agenda: 'agenda', chercher_taches: 'tâches', chercher_mails: 'mails', meteo: 'météo', lire_courses: 'courses', lire_sport: 'sport' };
+  const USED = { lire_frigo: 'frigo', lire_agenda: 'agenda', chercher_taches: 'tâches', chercher_mails: 'mails', meteo: 'météo', lire_courses: 'courses', lire_sport: 'sport' };
   async function sendFeedback(m, kind, note) {
     const i = S.chat.indexOf(m), u = S.chat.slice(0, i).reverse().find(x => x.r === 'u');
     m.fb = kind; save(); render();
     try { await srv('/api/feedback', { kind, user: u ? u.t : '', reply: m.t, note: note || '' }); toast(kind === 'up' ? 'Merci !' : 'Merci, je m’en sers pour progresser'); } catch (e) {}
   }
   function applyAction(a) {
+    if (a.type === 'frigo') { const old = JSON.parse(JSON.stringify(S.frigo || [])), n = frigoApply(a.ops || []); return { label: `Frigo : ${n} modification${n > 1 ? 's' : ''}`, undo: { k: 'frigo', old } }; }
     if (a.type === 'courses') { const added = addCourses(a.items || []); if (!added.length) return { label: 'Courses : tout était déjà sur ta liste', undo: { k: 'courses', ids: [] } }; return { label: `Courses : +${added.length} article${added.length > 1 ? 's' : ''}`, undo: { k: 'courses', ids: added.map(c => c.id) } }; }
     if (a.type === 'add') { const t = mk({ title: a.title, date: a.date, time: a.time, imp: a.importance, notes: a.notes || '', cat: a.cat || (a.notes ? 'Note' : 'Autre') }); S.items.unshift(t); return { label: `Ajouté : ${a.title}`, undo: { k: 'add', id: t.id } }; }
     if (a.type === 'note') { const t = S.items.find(i => i.id === a.id); if (!t) return null; const old = t.notes || ''; t.notes = (old ? old + '\n\n' : '') + a.text; return { label: `Note ajoutée à « ${t.title.slice(0, 40)} »`, undo: { k: 'notes', id: t.id, old } }; }
@@ -420,6 +421,7 @@
   function undoEntry(e) {
     const u = e.undo || {};
     if (u.k === 'add') S.items = S.items.filter(i => i.id !== u.id);
+    else if (u.k === 'frigo') S.frigo = u.old;
     else if (u.k === 'courses') S.courses = (S.courses || []).filter(c => !(u.ids || []).includes(c.id));
     else if (u.k === 'notes') { const t = S.items.find(i => i.id === u.id); if (t) t.notes = u.old; }
     else if (u.k === 'mem') S.mem = u.old;
@@ -553,7 +555,7 @@
     if (/^image\//.test(file.type)) { if (!quiet) { say('Je lis la photo (ça peut prendre une minute)…', true); render(); } return ocr(file); }
     return readOther(file);
   }
-  async function handleFile(file) {
+  async function handleFile(file, mode) {
     S.chat.push({ r: 'u', t: '📎 ' + file.name, ts: Date.now() });
     say('Je lis le document sur ton téléphone, rien n’est envoyé sur internet (sauf le chargement des outils de lecture).', true); render();
     try {
@@ -561,6 +563,7 @@
       if (txt.replace(/\s/g, '').length < 15) { say("Je n'ai pas réussi à lire de texte. Essaie une photo plus nette, bien éclairée.", true); save(); render(); return; }
       if (aiReady()) {                                             // l'IA lit le texte extrait : résumé, dates, montants, choses à faire
         S.chat = S.chat.filter(x => !(x.r === 'a' && /^Je lis le document/.test(x.t || '')));
+        if (mode === 'ticket') { aiStream('Voici le texte d’un ticket de caisse. Relève les produits ALIMENTAIRES (ignore le reste), avec les quantités, et propose de les ajouter au frigo avec proposer_frigo. Ne donne une date de péremption que si elle est écrite sur le ticket ; sinon estime-la prudemment avec estimee=true selon le type de produit (frais, conserve…). Dis-moi clairement ce qui est estimé.', { url: 'fichier : ' + file.name, title: file.name, text: txt.replace(/[ \t]+/g, ' ').slice(0, 7000) }); return; }
         aiStream(`Voici le document « ${file.name} » que je viens d'ajouter. Résume-le clairement, relève les dates, montants, personnes et choses à faire, et propose les actions utiles (tâches, envoi).`,
           { url: 'fichier : ' + file.name, title: file.name, text: txt.replace(/[ \t]+/g, ' ').slice(0, 7000) });
         return;
@@ -640,7 +643,7 @@
     syncing = true;
     try {
       const items = S.items.map(i => ({ id: i.id, title: i.secret ? '🔒 Privé' : i.title, cat: i.secret ? 'Privé' : i.cat, notes: i.secret ? '' : (i.notes || '').slice(0, 300), date: i.date, time: i.time, imp: i.imp, done: !!i.done, doneAt: i.doneAt, created: i.created, lastNotified: i.lastNotified, lastAlertAt: i.lastAlertAt, alertOpen: !!i.alertOpen, snoozeUntil: i.snoozeUntil }));
-      const res = await srv('/api/sync', { items, rf: S.rf, courses: (S.courses || []).slice(0, 150).map(c => ({ t: c.t, r: c.r, done: !!c.done })), sportGoal: S.sportGoal || 3 });
+      const res = await srv('/api/sync', { items, rf: S.rf, courses: (S.courses || []).slice(0, 150).map(c => ({ t: c.t, r: c.r, done: !!c.done })), frigo: (S.frigo || []).slice(0, 200).map(x => ({ id: x.id, t: x.t, q: x.q, u: x.u, exp: x.exp, est: !!x.est })), sportGoal: S.sportGoal || 3 });
       let ch = false;
       for (const it of S.items) {
         const ts = res.alerts && res.alerts[it.id];
@@ -1055,6 +1058,7 @@
       }
       if (a.type === 'remember' && a.why) b.append(el('div', { class: 'hint', style: 'margin-top:8px', text: 'Je l’ai compris ainsi : ' + a.why }));
       if (a.type === 'note') b.append(el('div', { class: 'hint', style: 'white-space:pre-wrap;margin-top:8px', text: 'Texte ajouté : ' + a.text }));
+      if (a.type === 'frigo') { b.append(el('div', { class: 'hint', style: 'white-space:pre-wrap;margin-top:8px', text: (a.ops || []).map(o => (o.op === 'add' ? '＋ ' : o.op === 'remove' ? '− ' : '✎ ') + o.t + ([o.q, o.u].filter(Boolean).length ? ' · ' + [o.q, o.u].filter(Boolean).join(' ') : '') + (o.exp ? ' · ' + (o.est ? '~' : '') + dayLabel(o.exp) : '')).join('\n') })); row.append(el('button', { class: 'chip p', type: 'button', text: `🧊 Mettre à jour le frigo (${a.ops.length})`, onclick: () => { runAction(a); (m.prop.doneIdx = m.prop.doneIdx || []).push(k); save(); render(); } })); return; }
       if (a.type === 'courses') { b.append(el('div', { class: 'hint', style: 'white-space:pre-wrap;margin-top:8px', text: (a.items || []).map(x => '• ' + x.t).join('\n') })); row.append(el('button', { class: 'chip p', type: 'button', text: `🛒 Ajouter ${a.items.length} article${a.items.length > 1 ? 's' : ''} aux courses`, onclick: () => { runAction(a); (m.prop.doneIdx = m.prop.doneIdx || []).push(k); save(); render(); } })); return; }
       if (a.type === 'share') { row.append(el('button', { class: 'chip p', type: 'button', text: `📤 Envoyer « ${a.title.slice(0, 28)} »`, onclick: () => shareOut(a.title, a.text) })); return; }
       if (a.type === 'mail') {
@@ -1172,6 +1176,18 @@
   }
 
   function copyText(t, label) { try { navigator.clipboard.writeText(t).then(() => toast(label + ' copié ✓'), () => toast('Copie impossible : sélectionne le texte')); } catch (e) { toast('Copie impossible : sélectionne le texte'); } }
+  function widgetShow(box, r) {
+    box.innerHTML = '';
+    box.append(el('ol', { class: 'steps' },
+      el('li', { text: 'Installe l’app gratuite « Scriptable » (App Store) et ouvre-la.' }),
+      el('li', { text: 'Touche + (nouveau script), puis colle le script copié avec le bouton ci-dessous, et nomme-le « Assistant ».' }),
+      el('li', { text: 'Écran verrouillé : appuie longuement dessus → Personnaliser → Écran verrouillé → zone des widgets → Scriptable → choisis « Assistant ».' }),
+      el('li', { text: 'Écran d’accueil : appuie longuement sur un fond libre → + → Scriptable → ajoute-le, puis touche-le → Script : « Assistant ».' })),
+      el('div', { class: 'chips' }, el('button', { class: 'chip p', type: 'button', text: '📋 Copier le script prêt à coller', onclick: async () => {
+        try { const t = await (await fetch('widget.scriptable.js', { cache: 'no-cache' })).text(); copyText(t.replace('__URL__', r.url).replace('__TOKEN__', r.token), 'Script'); } catch (e) { toast('Impossible de récupérer le script'); }
+      } }), el('button', { class: 'chip g', type: 'button', text: '♻️ Renouveler le jeton', onclick: async () => { try { const n = await srv('/api/widget-token', { renew: true }); widgetShow(box, n); toast('Nouveau jeton : recopie le script'); } catch (x) { toast('Échec'); } } })),
+      el('p', { class: 'hint', text: 'Le widget lit un résumé en lecture seule (tâches, événements, produits qui périment). Les tâches 🔒 Privé y apparaissent comme « Privé ». Si tu perds ton téléphone, renouvelle le jeton. iOS actualise le widget à son rythme (toutes les 15 à 30 minutes environ).' }));
+  }
   function siriShow(box, r) {
     box.innerHTML = '';
     box.append(el('ol', { class: 'steps' },
@@ -1210,6 +1226,13 @@
     v.append(el('div', { class: 'card' }, el('h3', { text: '🧠 Ce que je sais de toi' }),
       el('p', { text: (S.mem || []).length ? 'Je m’en sers pour mieux t’aider (ces notes sont envoyées à l’IA avec tes questions). Touche une note pour l’oublier.' : 'Rien pour l’instant. Dis par exemple « je suis végétarien » à l’assistant : il te proposera de le retenir.' }),
       el('div', { class: 'chips' }, ...(S.mem || []).map((t, i) => el('button', { class: 'chip', type: 'button', onclick: () => { S.mem.splice(i, 1); save(); render(); }, text: t.slice(0, 44) + ' ✕' })))));
+    v.append(el('div', { class: 'card' }, el('h3', { text: '📱 Écran verrouillé et widget' }),
+      el('p', { text: 'Le matin (8 h) et le soir (20 h), l’assistant t’envoie un résumé : il s’affiche sur l’écran verrouillé (active les rappels plus bas). Pour voir tes tâches du jour en permanence, tu peux ajouter un widget avec l’app gratuite Scriptable.' }),
+      el('div', { class: 'chips' }, el('button', { class: 'chip p', type: 'button', text: 'Préparer le widget', onclick: async e => {
+        const b = e.target, box = $('#widgetbox'); b.textContent = '…';
+        try { const r = await srv('/api/widget-token', {}); b.textContent = 'Préparer le widget'; widgetShow(box, r); } catch (x) { b.textContent = 'Préparer le widget'; box.textContent = 'Impossible pour l’instant : ' + x.message; }
+      } })),
+      el('div', { id: 'widgetbox' })));
     v.append(el('div', { class: 'card' }, el('h3', { text: '🎙️ Parler à ton assistant avec Siri' }),
       el('p', { text: 'Crée un Raccourci « Demande à mon assistant » : tu dis « Dis Siri, demande à mon assistant ce que j’ai demain » et il te répond à voix haute. Il lit tes tâches et ton agenda, mais ne modifie rien.' }),
       el('div', { class: 'chips' },
@@ -1360,10 +1383,63 @@
     v.append(...section('En retard', late, 'red'), ...section('À venir', next), ...section('Fait récemment', hist));
     if (!sport.length) v.append(el('div', { class: 'empty', text: 'Aucune séance pour l’instant. Ajoute-en une, ou demande un programme à l’assistant.' }));
   }
+  /* ---------- Frigo : produits, quantités, dates de péremption (l'assistant le lit pour proposer des recettes) ---------- */
+  const daysTo = ds => Math.round((new Date(ds + 'T12:00') - new Date(today() + 'T12:00')) / 864e5);
+  const frigoSorted = () => [...(S.frigo || [])].sort((a, b) => (!a.exp - !b.exp) || (a.exp || '').localeCompare(b.exp || '') || a.t.localeCompare(b.t));
+  function frigoApply(ops) {                                       // ajouter / retirer / modifier ; renvoie le nombre de changements
+    S.frigo = S.frigo || []; let n = 0;
+    const find = t => S.frigo.filter(x => E.norm(x.t) === E.norm(t)).sort((a, b) => (a.exp || '9').localeCompare(b.exp || '9'))[0];
+    for (const o of ops) {
+      if (o.op === 'add') {
+        const same = S.frigo.find(x => E.norm(x.t) === E.norm(o.t) && (x.exp || '') === (o.exp || '') && (x.u || '') === (o.u || ''));
+        if (same && /^\d+([.,]\d+)?$/.test(same.q || '') && /^\d+([.,]\d+)?$/.test(o.q || '')) same.q = String(+(parseFloat(same.q.replace(',', '.')) + parseFloat(o.q.replace(',', '.'))).toFixed(2));
+        else S.frigo.push({ id: 'f' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), t: o.t, q: o.q || '', u: o.u || '', exp: o.exp || '', est: !!o.est });
+        n++;
+      } else if (o.op === 'remove') { const f = find(o.t); if (f) { S.frigo = S.frigo.filter(x => x !== f); n++; } }
+      else if (o.op === 'set') { const f = find(o.t); if (f) { if (o.q) f.q = o.q; if (o.u) f.u = o.u; if (o.exp) { f.exp = o.exp; f.est = !!o.est; } n++; } }
+    }
+    return n;
+  }
+  const expBadge = x => {
+    if (!x.exp) return { t: 'sans date', c: 'ok' };
+    const j = daysTo(x.exp), est = x.est ? '~' : '';
+    return j < 0 ? { t: 'périmé', c: 'bad' } : j === 0 ? { t: "aujourd'hui", c: 'bad' } : j === 1 ? { t: 'demain', c: 'warn' } : j <= 3 ? { t: est + 'dans ' + j + ' j', c: 'warn' } : { t: est + dayLabel(x.exp), c: 'ok' };
+  };
+  let frigoEdit = null;
+  function renderFrigo(v) {
+    S.frigo = S.frigo || [];
+    const nm = el('input', { type: 'text', placeholder: 'Produit (ex : yaourts)', class: 'add-in', autocapitalize: 'sentences' });
+    const qt = el('input', { type: 'text', placeholder: 'Qté (4, 500 g…)', class: 'add-in q', inputmode: 'text' });
+    const dt = el('input', { type: 'date', class: 'add-in d', 'aria-label': 'Date de péremption' });
+    if (frigoEdit) { nm.value = frigoEdit.t; qt.value = [frigoEdit.q, frigoEdit.u].filter(Boolean).join(' '); dt.value = frigoEdit.exp || ''; }
+    const parseQ = s => { const m = /^\s*([\d.,]+)\s*(.*)$/.exec(s || ''); return m ? { q: m[1].replace(',', '.'), u: m[2].trim() } : { q: (s || '').trim(), u: '' }; };
+    const submit = () => {
+      const t = nm.value.trim(); if (!t) return; const { q, u } = parseQ(qt.value);
+      if (frigoEdit) { Object.assign(frigoEdit, { t, q, u, exp: dt.value, est: false }); frigoEdit = null; }
+      else S.frigo.push({ id: 'f' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), t, q, u, exp: dt.value, est: false });
+      save(); render();
+    };
+    nm.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); submit(); } };
+    v.append(el('div', { class: 'frg-form' }, nm, el('div', { class: 'frg-row' }, qt, dt, el('button', { class: 'send', type: 'button', 'aria-label': frigoEdit ? 'Enregistrer' : 'Ajouter', text: frigoEdit ? '✓' : '＋', onclick: submit }))));
+    const list = frigoSorted();
+    if (!list.length) v.append(el('div', { class: 'empty', text: 'Ton frigo est vide pour l’assistant. Ajoute des produits avec leur date, ou importe un ticket de caisse : il pourra alors te proposer des recettes avec ce que tu as.' }));
+    else v.append(el('div', { class: 'group' }, ...list.map(x => { const b = expBadge(x); return el('div', { class: 'crow frg' + (frigoEdit === x ? ' editing' : '') },
+      el('div', { class: 'cn', onclick: () => { frigoEdit = x; render(); } }, el('div', { text: x.t }), el('small', { class: 'hint', text: [x.q, x.u].filter(Boolean).join(' ') || 'quantité ?' })),
+      el('span', { class: 'bdg ' + b.c, text: b.t }),
+      el('button', { class: 'x', type: 'button', 'aria-label': 'Retirer', text: '✕', onclick: () => { S.frigo = S.frigo.filter(z => z !== x); if (frigoEdit === x) frigoEdit = null; save(); render(); } })); })));
+    const expired = list.filter(x => x.exp && daysTo(x.exp) < 0).length;
+    const pick = el('input', { type: 'file', accept: 'image/*,application/pdf', style: 'display:none' });
+    pick.onchange = () => { const f = pick.files[0]; if (!f) return; if (!aiReady()) { toast('L’assistant doit être actif pour lire un ticket'); return; } view = 'chat'; render(); handleFile(f, 'ticket'); };
+    v.append(pick, el('div', { class: 'chips', style: 'margin-top:16px' },
+      aiReady() && el('button', { class: 'chip p', type: 'button', text: '🍳 Que cuisiner ?', onclick: () => { view = 'chat'; render(); ask('Propose-moi 2 recettes avec ce qu’il y a dans mon frigo, en commençant par ce qui périme bientôt. Indique les quantités et ce qui manque.'); } }),
+      el('button', { class: 'chip', type: 'button', text: '🧾 Importer un ticket', onclick: () => pick.click() }),
+      frigoEdit && el('button', { class: 'chip g', type: 'button', text: 'Annuler la modification', onclick: () => { frigoEdit = null; render(); } }),
+      expired > 0 && el('button', { class: 'chip g', type: 'button', text: `🧹 Retirer les périmés (${expired})`, onclick: () => { S.frigo = S.frigo.filter(x => !(x.exp && daysTo(x.exp) < 0)); save(); render(); } })));
+  }
   function renderLists(v) {
     v.append(el('div', { class: 'top' }, el('div', {}, el('div', { class: 'date', text: 'Tes modules' }), el('h1', { text: 'Listes' }))));
-    v.append(el('div', { class: 'seg full' }, ...[['courses', '🛒 Courses'], ['sport', '💪 Sport'], ['idees', '💡 Idées']].map(([k, t]) => el('button', { type: 'button', class: listTab === k ? 'on' : '', text: t, onclick: () => { listTab = k; render(); } }))));
-    if (listTab === 'courses') renderCourses(v); else if (listTab === 'sport') renderSport(v); else renderBrain(v, true);
+    v.append(el('div', { class: 'seg full' }, ...[['courses', '🛒 Courses'], ['frigo', '🧊 Frigo'], ['sport', '💪 Sport'], ['idees', '💡 Idées']].map(([k, t]) => el('button', { type: 'button', class: listTab === k ? 'on' : '', text: t, onclick: () => { listTab = k; render(); } }))));
+    if (listTab === 'courses') renderCourses(v); else if (listTab === 'frigo') renderFrigo(v); else if (listTab === 'sport') renderSport(v); else renderBrain(v, true);
   }
   /* ---------- Agenda : vue calendrier façon Google Agenda (3 jours avec les heures, ou mois) ---------- */
   let calDate = null, calMode = '3j';
