@@ -32,18 +32,18 @@
     return zonedToMs(y, m, d, hh, mm);
   }
 
-  // Pas de rappel la nuit : on décale à 8h.
+  // Pas de rappel pendant le sommeil : on décale au lever. Réglable (minutes depuis minuit) ; par défaut lever 10 h, coucher 23 h.
+  let WAKE = 600, SLEEP = 1380;
+  function setRhythm(wake, sleep) { if (Number.isFinite(wake) && Number.isFinite(sleep) && wake !== sleep && wake >= 0 && wake < 1440 && sleep >= 0 && sleep < 1440) { WAKE = wake; SLEEP = sleep; } }
+  const getRhythm = () => ({ wake: WAKE, sleep: SLEEP });
   function quiet(ts) {
-    if (TZ) {
-      const p = tzParts(ts);
-      if (p.h >= 22) return zonedToMs(p.y, p.m, p.d + 1, 8, 0);
-      if (p.h < 8) return zonedToMs(p.y, p.m, p.d, 8, 0);
-      return ts;
-    }
-    const d = new Date(ts), h = d.getHours();
-    if (h >= 22) { d.setDate(d.getDate() + 1); d.setHours(8, 0, 0, 0); }
-    else if (h < 8) d.setHours(8, 0, 0, 0);
-    return d.getTime();
+    let p, cur;
+    if (TZ) { p = tzParts(ts); cur = p.h * 60 + p.mi; }
+    else { const d = new Date(ts); p = { y: d.getFullYear(), m: d.getMonth() + 1, d: d.getDate() }; cur = d.getHours() * 60 + d.getMinutes(); }
+    const asleep = SLEEP > WAKE ? (cur >= SLEEP || cur < WAKE) : (cur >= SLEEP && cur < WAKE);
+    if (!asleep) return ts;
+    const demain = SLEEP > WAKE && cur >= SLEEP;
+    return zonedToMs(p.y, p.m, p.d + (demain ? 1 : 0), Math.floor(WAKE / 60), WAKE % 60);
   }
 
   /* ---------- Rappels adaptatifs ----------
@@ -237,6 +237,6 @@
     return { imp: 2, sure: false, why: '' };
   }
 
-  const api = { autoPrio, prioKey, setTZ, tzParts, zonedToMs, extractDoc, findDates, dueAt, quiet, reminderPlan, shouldAlert, nextReminderAt, adjustRf, nextReview, reviewDue, parse, score, words, dstr, hm, pad, norm, REVIEW_DAYS, DAYS };
+  const api = { autoPrio, prioKey, setTZ, tzParts, zonedToMs, extractDoc, findDates, dueAt, quiet, setRhythm, getRhythm, reminderPlan, shouldAlert, nextReminderAt, adjustRf, nextReview, reviewDue, parse, score, words, dstr, hm, pad, norm, REVIEW_DAYS, DAYS };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.Engine = api;
 })(typeof self !== 'undefined' ? self : this);

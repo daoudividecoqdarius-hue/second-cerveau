@@ -1,7 +1,7 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.13-33';
+  const VERSION = '2026.11.13-34';
   const API = 'https://second-cerveau-api.second-cerveau-api.workers.dev'; // ton serveur Cloudflare (adresse publique, sans secret)
   const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
@@ -70,7 +70,7 @@
     save(); render();
   }
   const tonight = () => { const d = new Date(); d.setHours(19, 0, 0, 0); return d.getTime() > Date.now() + 30 * 60e3 ? d.getTime() : Date.now() + 3 * H; };
-  const tomorrow9 = () => { const d = addDays(1); d.setHours(9, 0, 0, 0); return d.getTime(); };
+  const tomorrow9 = () => { const d = addDays(1), w = S.wake == null ? 600 : S.wake; d.setHours(Math.floor(w / 60), w % 60 + 30, 0, 0); return d.getTime(); };   // demain, 30 min après le lever
 
   /* ================= Notifications ================= */
   async function notify(title, body, tag) {
@@ -643,7 +643,7 @@
     syncing = true;
     try {
       const items = S.items.map(i => ({ id: i.id, title: i.secret ? '🔒 Privé' : i.title, cat: i.secret ? 'Privé' : i.cat, notes: i.secret ? '' : (i.notes || '').slice(0, 300), date: i.date, time: i.time, imp: i.imp, done: !!i.done, doneAt: i.doneAt, created: i.created, lastNotified: i.lastNotified, lastAlertAt: i.lastAlertAt, alertOpen: !!i.alertOpen, snoozeUntil: i.snoozeUntil }));
-      const res = await srv('/api/sync', { items, rf: S.rf, courses: (S.courses || []).slice(0, 150).map(c => ({ t: c.t, r: c.r, done: !!c.done })), frigo: (S.frigo || []).slice(0, 200).map(x => ({ id: x.id, t: x.t, q: x.q, u: x.u, exp: x.exp, est: !!x.est })), sportGoal: S.sportGoal || 3 });
+      const res = await srv('/api/sync', { items, rf: S.rf, courses: (S.courses || []).slice(0, 150).map(c => ({ t: c.t, r: c.r, done: !!c.done })), frigo: (S.frigo || []).slice(0, 200).map(x => ({ id: x.id, t: x.t, q: x.q, u: x.u, exp: x.exp, est: !!x.est })), rhythm: { wake: S.wake == null ? 600 : S.wake, sleep: S.sleep == null ? 1380 : S.sleep }, sportGoal: S.sportGoal || 3 });
       let ch = false;
       for (const it of S.items) {
         const ts = res.alerts && res.alerts[it.id];
@@ -1180,9 +1180,10 @@
     box.innerHTML = '';
     box.append(el('ol', { class: 'steps' },
       el('li', { text: 'Installe l’app gratuite « Scriptable » (App Store) et ouvre-la.' }),
-      el('li', { text: 'Touche + (nouveau script), puis colle le script copié avec le bouton ci-dessous, et nomme-le « Assistant ».' }),
+      el('li', { text: 'Touche + (nouveau script), puis colle le script copié avec le bouton ci-dessous, et nomme-le « Assistant ». Si tu l’as déjà : ouvre-le, sélectionne tout, et remplace-le. Ensuite, le dessin du widget se met à jour tout seul.' }),
       el('li', { text: 'Écran verrouillé : appuie longuement dessus → Personnaliser → Écran verrouillé → zone des widgets → Scriptable → choisis « Assistant ».' }),
-      el('li', { text: 'Écran d’accueil : appuie longuement sur un fond libre → + → Scriptable → ajoute-le, puis touche-le → Script : « Assistant ».' })),
+      el('li', { text: 'Écran d’accueil : appuie longuement sur un fond libre → + → Scriptable → ajoute-le, puis touche-le → Script : « Assistant ».' }),
+      el('li', { text: 'Pour des lignes plus grosses (avec moins de lignes), écris « grand » dans le champ « Paramètre » du widget.' })),
       el('div', { class: 'chips' }, el('button', { class: 'chip p', type: 'button', text: '📋 Copier le script prêt à coller', onclick: async () => {
         try { const t = await (await fetch('widget.scriptable.js', { cache: 'no-cache' })).text(); copyText(t.replace('__URL__', r.url).replace('__TOKEN__', r.token), 'Script'); } catch (e) { toast('Impossible de récupérer le script'); }
       } }), el('button', { class: 'chip g', type: 'button', text: '♻️ Renouveler le jeton', onclick: async () => { try { const n = await srv('/api/widget-token', { renew: true }); widgetShow(box, n); toast('Nouveau jeton : recopie le script'); } catch (x) { toast('Échec'); } } })),
@@ -1243,6 +1244,10 @@
       el('div', { id: 'siribox' })));
     v.append(el('div', { class: 'card' }, el('h3', { text: '👋 Présentation' }),
       el('p', { text: 'Revoir les trois écrans de bienvenue.' }), el('div', { class: 'chips' }, el('button', { class: 'chip', type: 'button', text: 'Revoir', onclick: () => showOnboarding() }))));
+    v.append(el('div', { class: 'card' }, el('h3', { text: '🌙 Mon rythme' }),
+      el('p', { text: 'Pas de rappel entre ton coucher et ton lever. Le résumé du matin arrive à ton lever, celui du soir 3 h avant ton coucher.' }),
+      ...[['Lever', 'wake', 600], ['Coucher', 'sleep', 1380]].map(([lab, key, def]) => el('label', { class: 'rhy' }, el('span', { text: lab }),
+        el('input', { type: 'time', value: toHM(S[key] == null ? def : S[key]), onchange: e => { if (!e.target.value) return; S[key] = fromHM(e.target.value); applyRhythm(); save(); syncServer(); toast(lab + ' : ' + e.target.value); } })))));
     v.append(el('div', { class: 'card' }, el('h3', { text: '🔠 Taille du texte' }),
       el('p', { text: 'Pour lire plus confortablement.' }),
       el('div', { class: 'chips' }, ...[[100, 'Normal'], [115, 'Grand'], [130, 'Très grand']].map(([p, t]) => el('button', { class: 'chip' + ((S.textPct || 100) === p ? ' p' : ''), type: 'button', text: t, onclick: () => { S.textPct = p; applyTextSize(); save(); render(); } })))));
@@ -1573,6 +1578,9 @@
   $('#fab').onclick = () => { openSheet(null); if (view === 'cal' && calDate) $('#s-date').value = calDate; };   // depuis l'agenda : le jour affiché est prérempli
   const applyTextSize = () => { document.documentElement.style.webkitTextSizeAdjust = document.documentElement.style.textSizeAdjust = (S.textPct || 100) + '%'; };
   applyTextSize();
+  const applyRhythm = () => E.setRhythm(S.wake == null ? 600 : S.wake, S.sleep == null ? 1380 : S.sleep);   // lever 10 h / coucher 23 h par défaut : pas de rappel pendant le sommeil
+  applyRhythm();
+  const toHM = m => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0'), fromHM = s => { const [h, m] = String(s).split(':').map(Number); return h * 60 + (m || 0); };
   document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => { view = b.dataset.v; render(); scroller().scrollTop = 0; });
 
   /* ================= Démarrage ================= */

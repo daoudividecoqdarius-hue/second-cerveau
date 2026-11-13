@@ -299,3 +299,7 @@ label input,label select{margin-top:5px;font-weight:400;font-size:17px}
 .bdg{flex:none;font-size:12.5px;font-weight:600;border-radius:99px;padding:4px 10px;background:var(--fill);color:var(--mut)}
 .bdg.warn{background:color-mix(in srgb,var(--warn) 22%,transparent);color:var(--warn)}
 .bdg.bad{background:color-mix(in srgb,var(--red) 22%,transparent);color:var(--red)}
+
+/* Mon rythme */
+.rhy{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-top:.5px solid var(--sep);font-size:17px}
+.rhy input{border:0;background:var(--fill);border-radius:10px;padding:8px 12px;font-size:17px;color:var(--txt)}
