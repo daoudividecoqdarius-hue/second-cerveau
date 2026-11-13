@@ -1,7 +1,7 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.13-34';
+  const VERSION = '2026.11.13-35';
   const API = 'https://second-cerveau-api.second-cerveau-api.workers.dev'; // ton serveur Cloudflare (adresse publique, sans secret)
   const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
@@ -371,7 +371,7 @@
           const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (!line) continue;
           let ev; try { ev = JSON.parse(line); } catch (e) { continue; }
           if (ev.t) { m.t += ev.t; m.status = ''; paint(m); }
-          else if (ev.tool) { m.status = { mail: '📬 Je cherche dans tes mails…', weather: '🌤️ Je consulte la météo…', chercher_taches: '🔎 Je consulte tes tâches…', lire_frigo: '🧊 Je regarde ton frigo…', lire_agenda: '📅 Je lis ton agenda…', lire_courses: '🛒 Je regarde ta liste…', lire_sport: '💪 Je regarde ton sport…' }[ev.tool] || '…'; paint(m); }
+          else if (ev.tool) { m.status = { mail: '📬 Je cherche dans tes mails…', weather: '🌤️ Je consulte la météo…', chercher_taches: '🔎 Je consulte tes tâches…', lire_frigo: '🧊 Je regarde ton frigo…', lire_musculation: '🏋️ Je regarde tes séances…', lire_agenda: '📅 Je lis ton agenda…', lire_courses: '🛒 Je regarde ta liste…', lire_sport: '💪 Je regarde ton sport…' }[ev.tool] || '…'; paint(m); }
           else if (ev.error) throw new Error(ev.error);
           else if (ev.done) { fin = true; m.used = ev.used || []; if (ev.actions && ev.actions.length) m.prop = { type: 'ai', actions: ev.actions }; }
         }
@@ -395,7 +395,7 @@
       save(); render();
     } catch (e) {}
   }
-  const USED = { lire_frigo: 'frigo', lire_agenda: 'agenda', chercher_taches: 'tâches', chercher_mails: 'mails', meteo: 'météo', lire_courses: 'courses', lire_sport: 'sport' };
+  const USED = { lire_musculation: 'musculation', lire_frigo: 'frigo', lire_agenda: 'agenda', chercher_taches: 'tâches', chercher_mails: 'mails', meteo: 'météo', lire_courses: 'courses', lire_sport: 'sport' };
   async function sendFeedback(m, kind, note) {
     const i = S.chat.indexOf(m), u = S.chat.slice(0, i).reverse().find(x => x.r === 'u');
     m.fb = kind; save(); render();
@@ -643,7 +643,7 @@
     syncing = true;
     try {
       const items = S.items.map(i => ({ id: i.id, title: i.secret ? '🔒 Privé' : i.title, cat: i.secret ? 'Privé' : i.cat, notes: i.secret ? '' : (i.notes || '').slice(0, 300), date: i.date, time: i.time, imp: i.imp, done: !!i.done, doneAt: i.doneAt, created: i.created, lastNotified: i.lastNotified, lastAlertAt: i.lastAlertAt, alertOpen: !!i.alertOpen, snoozeUntil: i.snoozeUntil }));
-      const res = await srv('/api/sync', { items, rf: S.rf, courses: (S.courses || []).slice(0, 150).map(c => ({ t: c.t, r: c.r, done: !!c.done })), frigo: (S.frigo || []).slice(0, 200).map(x => ({ id: x.id, t: x.t, q: x.q, u: x.u, exp: x.exp, est: !!x.est })), rhythm: { wake: S.wake == null ? 600 : S.wake, sleep: S.sleep == null ? 1380 : S.sleep }, sportGoal: S.sportGoal || 3 });
+      const res = await srv('/api/sync', { items, rf: S.rf, courses: (S.courses || []).slice(0, 150).map(c => ({ t: c.t, r: c.r, done: !!c.done })), frigo: (S.frigo || []).slice(0, 200).map(x => ({ id: x.id, t: x.t, q: x.q, u: x.u, exp: x.exp, est: !!x.est })), rhythm: { wake: S.wake == null ? 600 : S.wake, sleep: S.sleep == null ? 1380 : S.sleep, prep: S.prep || 90 }, gym: ((S.gym && S.gym.sessions) || []).slice(0, 30), sportGoal: S.sportGoal || 3 });
       let ch = false;
       for (const it of S.items) {
         const ts = res.alerts && res.alerts[it.id];
@@ -897,6 +897,18 @@
     } catch (e) { S.plan = { ...(S.plan || {}), fail: Date.now(), err: e.message }; }
     finally { planBusy = false; save(); render(); }
   }
+  /* Heure de réveil conseillée pour demain : premier rendez-vous (avant midi) moins le temps de préparation */
+  function reveilLocal() {
+    const tm = E.dstr(addDays(1)), prep = S.prep || 90;
+    const c = [...visibleEvents().filter(e => e.date === tm && prioOf(e) !== 'low'), ...open().filter(i => i.date === tm && !i.secret)].filter(x => toMin(x.time) != null).sort((a, b) => a.time.localeCompare(b.time));
+    const f = c[0]; if (!f || f.time >= '12:00') return null; const m = toMin(f.time) - prep; if (m < 0) return null;
+    return { h: fromMin(m), pour: f.time + ' ' + f.title.slice(0, 40), prep };
+  }
+  function renderReveil(v) {
+    if (new Date().getHours() < 17) return; const r = reveilLocal(); if (!r) return;
+    v.append(el('div', { class: 'alert', style: 'border-color:var(--acc2)' }, el('div', { class: 't', text: `⏰ Réveil conseillé demain : ${r.h}` }),
+      el('div', { class: 'm', style: 'margin-bottom:0', text: `Premier rendez-vous : ${r.pour} (${r.prep} min de préparation). Règle ton réveil (Alarmy ou Horloge) : je ne peux pas le faire à ta place.` })));
+  }
   function renderAssistant(v) {
     if (!aiReady() && !radar().length) return;
     const rd = radar(), pl = S.plan && S.plan.day === today() ? (S.plan.items || []).filter(x => !x.hidden && !(x.prop && (x.prop.doneIdx || []).length)) : [];
@@ -957,6 +969,7 @@
         el('div', { class: 'when', text: nxt ? `${when(nxt)} · ${rel(E.dueAt(nxt))}` : 'Ajoute ce qui te trotte dans la tête avec le bouton +' })),
       ring));
     renderAssistant(v);
+    renderReveil(v);
 
     for (const it of open().filter(i => i.alertOpen && (!i.date || isLate(i) || E.dueAt(i) - now <= 3 * H))) {   // la carte « Fait » n'apparaît que si l'échéance est proche ou passée
       v.append(el('div', { class: 'alert' },
@@ -1242,12 +1255,26 @@
           try { const r = await srv('/api/ask-token', {}); b.textContent = 'Afficher les réglages Siri'; siriShow(box, r); } catch (x) { b.textContent = 'Afficher les réglages Siri'; box.textContent = 'Impossible pour l’instant : ' + x.message; }
         } })),
       el('div', { id: 'siribox' })));
+    v.append(el('div', { class: 'card' }, el('h3', { text: '🏋️ Hevy (musculation)' }),
+      el('p', { text: 'Pour que l’assistant connaisse tes séances, tes charges et tes records. Deux façons : la clé Hevy (abonnement Hevy Pro requis, synchro automatique) ou l’export CSV (gratuit, à refaire quand tu veux).' }),
+      el('p', { class: 'hint', text: S.gym && S.gym.connected ? '✅ Hevy est relié.' + (S.gym.ts ? ' Dernière synchro : ' + rel(S.gym.ts) + '.' : '') : (S.gym && S.gym.sessions && S.gym.sessions.length ? `Données importées depuis un export (${S.gym.sessions.length} séances).` : 'Pas encore relié.') }),
+      S.gym && S.gym.connected ? el('div', { class: 'chips' }, el('button', { class: 'chip p', type: 'button', text: '↻ Synchroniser', onclick: () => gymSync(false) }),
+        el('button', { class: 'chip g', type: 'button', text: 'Déconnecter', onclick: async () => { try { await srv('/api/hevy', { action: 'remove' }); S.gym.connected = false; save(); render(); toast('Clé Hevy supprimée du serveur'); } catch (e) { toast('Échec'); } } }))
+      : el('div', {}, el('input', { type: 'password', id: 'hevykey', class: 'add-in', placeholder: 'Clé Hevy (Hevy Pro → Réglages → Développeur)', autocomplete: 'off', style: 'width:100%;margin:6px 0' }),
+        el('div', { class: 'chips' }, el('button', { class: 'chip p', type: 'button', text: 'Connecter', onclick: () => { const k = $('#hevykey'); gymConnect(k.value.trim(), $('#hevymsg')); k.value = ''; } })),
+        el('p', { class: 'hint', id: 'hevymsg', text: 'La clé est gardée sur ton serveur, jamais montrée ni envoyée à l’IA.' })),
+      el('div', { class: 'chips', style: 'margin-top:8px' }, el('button', { class: 'chip', type: 'button', text: '📄 Importer l’export CSV', onclick: () => $('#hevycsv').click() })),
+      el('input', { type: 'file', id: 'hevycsv', accept: '.csv,text/csv,text/plain', style: 'display:none', onchange: e => { const f = e.target.files[0]; if (f) gymCsv(f); e.target.value = ''; } }),
+      el('p', { class: 'hint', text: 'Export : dans Hevy, Profil → Réglages (⚙️) → Exporter les données → CSV, puis enregistre le fichier et choisis-le ici. (Le chemin exact peut varier selon la version de l’app.)' })));
     v.append(el('div', { class: 'card' }, el('h3', { text: '👋 Présentation' }),
       el('p', { text: 'Revoir les trois écrans de bienvenue.' }), el('div', { class: 'chips' }, el('button', { class: 'chip', type: 'button', text: 'Revoir', onclick: () => showOnboarding() }))));
     v.append(el('div', { class: 'card' }, el('h3', { text: '🌙 Mon rythme' }),
       el('p', { text: 'Pas de rappel entre ton coucher et ton lever. Le résumé du matin arrive à ton lever, celui du soir 3 h avant ton coucher.' }),
       ...[['Lever', 'wake', 600], ['Coucher', 'sleep', 1380]].map(([lab, key, def]) => el('label', { class: 'rhy' }, el('span', { text: lab }),
-        el('input', { type: 'time', value: toHM(S[key] == null ? def : S[key]), onchange: e => { if (!e.target.value) return; S[key] = fromHM(e.target.value); applyRhythm(); save(); syncServer(); toast(lab + ' : ' + e.target.value); } })))));
+        el('input', { type: 'time', value: toHM(S[key] == null ? def : S[key]), onchange: e => { if (!e.target.value) return; S[key] = fromHM(e.target.value); applyRhythm(); save(); syncServer(); toast(lab + ' : ' + e.target.value); } }))),
+      el('label', { class: 'rhy' }, el('span', { text: 'Préparation avant le 1er rendez-vous (min)' }),
+        el('input', { type: 'number', min: '10', max: '240', step: '5', value: String(S.prep || 90), style: 'width:80px', onchange: e => { S.prep = Math.min(240, Math.max(10, +e.target.value || 90)); save(); syncServer(); toast('Préparation : ' + S.prep + ' min'); } })),
+      el('p', { class: 'hint', text: 'Le soir, l’assistant te propose l’heure de réveil conseillée pour le lendemain (premier rendez-vous moins ce temps). Alarmy et l’app Horloge ne peuvent pas être pilotées : tu règles ton réveil toi-même.' })));
     v.append(el('div', { class: 'card' }, el('h3', { text: '🔠 Taille du texte' }),
       el('p', { text: 'Pour lire plus confortablement.' }),
       el('div', { class: 'chips' }, ...[[100, 'Normal'], [115, 'Grand'], [130, 'Très grand']].map(([p, t]) => el('button', { class: 'chip' + ((S.textPct || 100) === p ? ' p' : ''), type: 'button', text: t, onclick: () => { S.textPct = p; applyTextSize(); save(); render(); } })))));
@@ -1372,15 +1399,53 @@
       done.length && el('button', { class: 'chip g', type: 'button', text: '🧹 Vider le panier', onclick: () => { S.courses = S.courses.filter(c => !c.done); save(); render(); } })));
   }
   const weekStart = () => { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d.getTime(); };
+  /* ---------- Hevy : séances de musculation (clé Hevy Pro via le serveur, ou export CSV gratuit) ---------- */
+  async function gymSync(quiet) {
+    try {
+      const r = await srv('/api/hevy', { action: 'sync' }); if (!r.ok) throw new Error(r.reason || 'échec');
+      S.gym = { sessions: r.sessions, src: 'api', ts: Date.now(), connected: true }; save(); syncServer(); render();
+      if (!quiet) toast(`Hevy : ${r.sessions.length} séances à jour`);
+    } catch (e) { if (!quiet) toast('Hevy : ' + e.message); }
+  }
+  const autoGym = () => { if (S.gym && S.gym.connected && S.srvToken && Date.now() - (S.gym.ts || 0) > 3 * H) gymSync(true); };
+  async function gymConnect(key, box) {
+    box.textContent = 'Vérification…';
+    try {
+      const r = await srv('/api/hevy', { action: 'save', key }); if (!r.ok) { box.textContent = r.reason; return; }
+      S.gym = Object.assign({ sessions: [], src: 'api', ts: 0 }, S.gym || {}, { connected: true }); save(); box.textContent = `Connecté${r.name ? ' : ' + r.name : ''} ✓`; await gymSync(false);
+    } catch (e) { box.textContent = 'Impossible pour l’instant : ' + e.message; }
+  }
+  async function gymCsv(file) {
+    try {
+      const s = Gym.parseHevyCsv(await file.text()); S.gym = { sessions: s, src: 'csv', ts: Date.now(), connected: !!(S.gym && S.gym.connected) };
+      save(); syncServer(); render(); toast(`${s.length} séances importées`);
+    } catch (e) { toast('Import impossible : ' + e.message); }
+  }
+  function renderGymCard(v) {
+    const g = (S.gym && S.gym.sessions) || [];
+    if (!g.length) { v.append(el('div', { class: 'card' }, el('h3', { text: '🏋️ Hevy' }), el('p', { text: 'Relie Hevy pour que l’assistant connaisse tes exercices, tes charges et tes records, et te conseille la suite.' }),
+      el('div', { class: 'chips' }, el('button', { class: 'chip p', type: 'button', text: 'Relier Hevy', onclick: () => { view = 'settings'; render(); } })))); return; }
+    const best = e => e.s.reduce((m, x) => (x[0] > m[0] || (x[0] === m[0] && x[1] > m[1])) ? x : m, e.s[0] || [0, 0]);
+    const top = s => s.e.slice(0, 3).map(e => { const t = best(e); return `${e.n.replace(/\s*\(.*\)$/, '')} ${t[0] ? t[0] + ' kg × ' : ''}${t[1]}`; }).join(' · ');
+    v.append(el('div', { class: 'card' }, el('h3', { text: '🏋️ Dernières séances' }),
+      ...g.slice(0, 3).map(s => el('div', { class: 'jr', style: 'display:block' }, el('div', {}, el('b', { text: s.t }), el('small', { class: 'hint', text: `  ${dayLabel(s.d)}${s.m ? ' · ' + s.m + ' min' : ''}` })), el('div', { class: 'hint', text: top(s) }))),
+      el('p', { class: 'hint', text: `Source : ${S.gym.src === 'api' ? 'Hevy (synchro automatique)' : 'export CSV'} · mis à jour ${rel(S.gym.ts || Date.now())}` }),
+      el('div', { class: 'chips' },
+        aiReady() && el('button', { class: 'chip p', type: 'button', text: '✨ Prochaine séance conseillée', onclick: () => { view = 'chat'; render(); ask('Regarde mes dernières séances de musculation et propose-moi la prochaine, avec les charges à viser pour progresser, puis ajoute-la à mon planning sur un créneau libre.'); } }),
+        S.gym.connected && el('button', { class: 'chip g', type: 'button', text: '↻ Synchroniser', onclick: () => gymSync(false) }))));
+  }
   function renderSport(v) {
     const goal = S.sportGoal || 3, sport = S.items.filter(i => i.cat === 'Sport'), ws = weekStart();
-    const doneW = sport.filter(i => i.done && (i.doneAt || 0) >= ws).length, td = today();
+    const wsd = E.dstr(new Date(ws)), days = new Set(sport.filter(i => i.done && (i.doneAt || 0) >= ws).map(i => E.dstr(new Date(i.doneAt))));
+    for (const s of ((S.gym && S.gym.sessions) || [])) if (s.d >= wsd) days.add(s.d);                  // une séance Hevy compte comme une séance faite (un jour = une séance)
+    const doneW = days.size, td = today();
     const pct = Math.min(1, doneW / goal), C = 2 * Math.PI * 26, ring = el('div', { class: 'ring' });
     ring.innerHTML = `<svg width="64" height="64" viewBox="0 0 64 64"><circle cx="32" cy="32" r="26" fill="none" stroke="rgba(255,255,255,.3)" stroke-width="7"/><circle cx="32" cy="32" r="26" fill="none" stroke="#fff" stroke-width="7" stroke-linecap="round" stroke-dasharray="${C}" stroke-dashoffset="${C * (1 - pct)}"/></svg>`;
     ring.append(el('b', { text: `${doneW}/${goal}` }));
     v.append(el('div', { class: 'focus' }, el('div', { class: 'l' }, el('small', { text: 'Objectif de la semaine' }),
       el('div', { class: 'big', text: doneW >= goal ? 'Objectif atteint 💪' : `${goal - doneW} séance${goal - doneW > 1 ? 's' : ''} à faire` }),
       el('div', { class: 'when' }, 'Objectif : ', el('button', { class: 'mini', type: 'button', text: '−', onclick: () => { S.sportGoal = Math.max(1, goal - 1); save(); render(); } }), ` ${goal} par semaine `, el('button', { class: 'mini', type: 'button', text: '+', onclick: () => { S.sportGoal = Math.min(14, goal + 1); save(); render(); } }))), ring));
+    renderGymCard(v);
     v.append(el('div', { class: 'chips', style: 'margin:14px 0 4px' },
       el('button', { class: 'chip p', type: 'button', text: '＋ Séance', onclick: () => { openSheet(null); $('#s-cat').value = 'Sport'; $('#s-title').value = ''; $('#s-hint').textContent = 'Ex : Jambes jeudi 18h. Mets les exercices dans les notes.'; } }),
       aiReady() && el('button', { class: 'chip', type: 'button', text: '✨ Programme par l’assistant', onclick: () => { view = 'chat'; render(); ask('Propose-moi un programme de sport pour cette semaine adapté à mon planning, avec les exercices détaillés, et ajoute les séances à mon planning sur des créneaux libres.'); } })));
@@ -1578,7 +1643,7 @@
   $('#fab').onclick = () => { openSheet(null); if (view === 'cal' && calDate) $('#s-date').value = calDate; };   // depuis l'agenda : le jour affiché est prérempli
   const applyTextSize = () => { document.documentElement.style.webkitTextSizeAdjust = document.documentElement.style.textSizeAdjust = (S.textPct || 100) + '%'; };
   applyTextSize();
-  const applyRhythm = () => E.setRhythm(S.wake == null ? 600 : S.wake, S.sleep == null ? 1380 : S.sleep);   // lever 10 h / coucher 23 h par défaut : pas de rappel pendant le sommeil
+  const applyRhythm = () => { if (E.setRhythm) E.setRhythm(S.wake == null ? 600 : S.wake, S.sleep == null ? 1380 : S.sleep); };   // lever 10 h / coucher 23 h par défaut : pas de rappel pendant le sommeil
   applyRhythm();
   const toHM = m => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0'), fromHM = s => { const [h, m] = String(s).split(':').map(Number); return h * 60 + (m || 0); };
   document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => { view = b.dataset.v; render(); scroller().scrollTop = 0; });
@@ -1592,7 +1657,8 @@
   if (gh) { say(gh[1] === 'ok' ? '📧 Gmail est connecté ! Je repère maintenant tes deadlines et les mails sans réponse.' : "La connexion à Gmail n'a pas abouti. Réessaie depuis Réglages → Mails (Gmail).", true); save(); try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {} }
   document.addEventListener('visibilitychange', () => { if (!document.hidden) { tick(); syncServer(); } });
   setInterval(tick, 30000);
-  setInterval(() => { if (!document.hidden) { syncServer(); loadPlan(); } }, 120000);
+  setInterval(() => { if (!document.hidden) { syncServer(); loadPlan(); autoGym(); } }, 120000);
+  setTimeout(autoGym, 5000);
   // iOS : après le clavier ou un retour sur l'app, les barres fixes peuvent rester décalées → on force un recalage
   const settle = () => { if (window.scrollY) window.scrollTo(0, 0); };      // la page elle-même ne doit jamais rester décalée (après le clavier)
   document.addEventListener('focusout', () => setTimeout(settle, 150));

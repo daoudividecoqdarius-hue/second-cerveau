@@ -41,7 +41,7 @@
   if (lock) {                                           // rectangle : le plus grand format de l'écran verrouillé
     w.setPadding(0, 0, 0, 0);
     const max = grand ? 2 : 3, taille = grand ? 16 : 14;
-    const h = w.addText(titre + " · " + liste.length);
+    const h = w.addText(titre + " · " + liste.length + (soir && d.reveil ? " · ⏰ " + d.reveil.h : ""));
     h.font = F(grand ? 14 : 13, true);
     h.lineLimit = 1;
     if (!liste.length) {
@@ -122,6 +122,12 @@
     p.textColor = new Color("#9db4e6");
   }
   w.addSpacer();
+  if (soir && d.reveil && fam !== "small") {
+    const rv = w.addText("⏰ Réveil conseillé : " + d.reveil.h);
+    rv.font = F(12, true);
+    rv.textColor = new Color("#ffd479");
+    rv.lineLimit = 1;
+  }
   if (fam !== "small" && d.frigo && d.frigo.length) {
     const f = w.addText("🧊 " + d.frigo.slice(0, 3).map(function (x) { return x.t + (x.jours <= 0 ? " !" : ""); }).join(" · "));
     f.font = F(12, true);
