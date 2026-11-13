@@ -22,10 +22,14 @@ self.addEventListener('push', e => {
       }
     } catch (_) {}
     if (!list.length) list = [{ title: 'Second Cerveau', body: 'Jette un œil à ton planning.', tag: 'generic' }];
-    await Promise.all(list.map(n => self.registration.showNotification(n.title, { body: n.body, tag: n.tag, icon: 'icon.svg' })));
+    await Promise.all(list.map(n => self.registration.showNotification(n.title, { body: n.body, tag: n.tag, icon: 'icon.svg', data: { url: n.url || '' } })));
   })());
 });
 self.addEventListener('notificationclick', e => {
   e.notification.close();
-  e.waitUntil(self.clients.matchAll({ type: 'window' }).then(l => l.length ? l[0].focus() : self.clients.openWindow('./')));
+  const url = (e.notification.data && e.notification.data.url) || '';          // ex. « #recus » : la notification d'un fichier reçu ouvre la liste de ce qui a été fait
+  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(async l => {
+    if (l.length) { const c = l[0]; try { await c.focus(); } catch (_) {} if (url) c.postMessage({ go: url }); return; }
+    return self.clients.openWindow('./' + url);
+  }));
 });

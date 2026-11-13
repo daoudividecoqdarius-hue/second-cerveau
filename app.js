@@ -1,7 +1,7 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.13-35';
+  const VERSION = '2026.11.13-36';
   const API = 'https://second-cerveau-api.second-cerveau-api.workers.dev'; // ton serveur Cloudflare (adresse publique, sans secret)
   const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
@@ -559,6 +559,8 @@
     S.chat.push({ r: 'u', t: '📎 ' + file.name, ts: Date.now() });
     say('Je lis le document sur ton téléphone, rien n’est envoyé sur internet (sauf le chargement des outils de lecture).', true); render();
     try {
+      const rf = await routeFile(file);                              // export Hevy, etc. : reconnu par son contenu
+      if (rf) { S.chat = S.chat.filter(x => !(x.r === 'a' && /^Je lis le document/.test(x.t || ''))); say(rf.icon + ' ' + rf.title + ' — ' + rf.detail, true); save(); render(); return; }
       const txt = await readFile(file);
       if (txt.replace(/\s/g, '').length < 15) { say("Je n'ai pas réussi à lire de texte. Essaie une photo plus nette, bien éclairée.", true); save(); render(); return; }
       if (aiReady()) {                                             // l'IA lit le texte extrait : résumé, dates, montants, choses à faire
@@ -638,6 +640,61 @@
   }
   let syncTimer = null, syncing = false;
   function scheduleSync() { if (!S.srvToken) return; clearTimeout(syncTimer); syncTimer = setTimeout(syncServer, 2500); }
+  /* ---------- Reçus : tout ce qui arrive par le Raccourci (fichiers, messages, liens) est reconnu, traité, puis résumé ici ---------- */
+  function logRecu(o) {
+    S.recus = [{ id: 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 4), ts: Date.now(), icon: o.icon || '📥', title: String(o.title || '').slice(0, 120), detail: String(o.detail || '').slice(0, 240), go: o.go || null, seen: false }, ...(S.recus || [])].slice(0, 30);
+  }
+  /* Reconnaît un fichier par son CONTENU (le nom et le type envoyés par l'iPhone ne sont pas fiables) et agit : export Hevy → séances importées */
+  async function routeFile(file) {
+    const name = (file.name || '').toLowerCase(), mime = file.type || '';
+    if (file.size > 4e6 || !(/csv|text|octet|excel|plain/.test(mime) || /\.(csv|txt)$/.test(name) || !mime)) return null;
+    let t; try { t = await file.text(); } catch (e) { return null; }
+    const head = t.slice(0, 900);
+    if (/exercise_title|exercise title|exercice/i.test(head) && /start_time|start time|debut/i.test(head) && typeof Gym !== 'undefined') {
+      try {
+        const s = Gym.parseHevyCsv(t); S.gym = { sessions: s, src: 'csv', ts: Date.now(), connected: !!(S.gym && S.gym.connected) }; save(); syncServer();
+        return { icon: '🏋️', title: 'Export Hevy importé', detail: `${s.length} séance${s.length > 1 ? 's' : ''} · dernière : ${s[0].t} (${dayLabel(s[0].d)}). Ouvre la page Sport pour les voir.`, go: { view: 'lists', tab: 'sport' } };
+      } catch (e) { return { icon: '⚠️', title: 'Export Hevy non lu', detail: e.message }; }
+    }
+    return null;
+  }
+  /* Un fichier arrivé par le Raccourci : reconnu → traité ; sinon lu et résumé par l'IA ; sinon dit clairement pourquoi on ne peut pas */
+  async function inboxFile(m) {
+    const mime = m.file.mime || '', ext = /pdf/.test(mime) ? 'pdf' : /wordprocessing/.test(mime) ? 'docx' : /spreadsheet/.test(mime) ? 'xlsx' : /presentation/.test(mime) ? 'pptx' : /csv/.test(mime) ? 'csv' : (mime.split('/')[1] || 'bin').replace(/[^a-z0-9]/gi, '').slice(0, 10);
+    const nice = /pdf/.test(mime) ? 'PDF' : /^image\//.test(mime) ? 'photo' : /wordprocessing|msword/.test(mime) ? 'document Word' : /spreadsheet|excel/.test(mime) ? 'tableur' : /presentation/.test(mime) ? 'présentation' : /csv/.test(mime) ? 'fichier CSV' : 'fichier';
+    let file;
+    try {
+      const r = await fetch(`${API}/api/inbox/file?id=${encodeURIComponent(m.id)}`, { headers: { Authorization: 'Bearer ' + S.srvToken } });
+      if (!r.ok) throw new Error('fichier ' + r.status);
+      file = new File([await r.blob()], 'partage.' + ext, { type: mime });
+    } catch (e) { logRecu({ icon: '⚠️', title: 'Fichier non récupéré', detail: 'Le serveur n’a pas pu me le redonner (' + e.message + '). Renvoie-le.' }); m._logged = true; return; }
+    const routed = await routeFile(file);
+    if (routed) { logRecu(routed); m._logged = true; return; }
+    let txt = ''; try { txt = await readFile(file, true); } catch (e) { txt = ''; }
+    if (txt.replace(/\s/g, '').length < 15) { logRecu({ icon: '⚠️', title: `Je n’ai pas su lire ce ${nice}`, detail: 'Aucun texte lisible trouvé (photo floue, PDF scanné, format inconnu). Envoie-le directement dans le chat avec 📎, ou renvoie une version plus nette.' }); m._logged = true; return; }
+    let ai = null;
+    if (aiReady()) { try { const a = await srv('/api/ai/message', { text: txt.replace(/[ \t]+/g, ' ').slice(0, 3500) }); if (a && a.ok) ai = a; } catch (e) {} }
+    const d = ai ? null : E.extractDoc(txt);
+    const it = mk(ai ? { title: ai.title, date: ai.date, time: ai.time, imp: ai.importance, cat: 'Document', ai: true, notes: [ai.summary, ai.who && 'De : ' + ai.who, '— Extrait du ' + nice + ' —\n' + txt.replace(/[ \t]+/g, ' ').slice(0, 1200)].filter(Boolean).join('\n') }
+      : { title: d.title, date: d.date || '', time: d.time || '', notes: d.notes || '', cat: d.kind === 'facture' || d.kind === 'rdv' ? 'Admin' : 'Document', imp: d.imp || 2 });
+    S.items.unshift(it);
+    logRecu({ icon: '📄', title: it.title, detail: (ai && ai.summary ? ai.summary.slice(0, 160) + ' · ' : '') + 'Ajouté à ton planning' + (it.date ? ' · ' + dayLabel(it.date) + (it.time ? ' ' + it.time : '') : ' (sans date)'), go: { item: it.id } });
+    m._logged = true;
+  }
+  function goRecu(g) {
+    if (!g) return;
+    if (g.item) { const it = S.items.find(i => i.id === g.item); if (it) { openSheet(it); return; } }
+    if (g.view) { view = g.view; if (g.tab) listTab = g.tab; render(); scroller().scrollTop = 0; }
+  }
+  function renderRecus(v) {
+    const list = (S.recus || []).filter(r => !r.seen && Date.now() - r.ts < 48 * H); if (!list.length) return;
+    const card = el('div', { class: 'ast', id: 'recus-card' }, el('div', { class: 'asth' }, el('b', { text: '📥 Reçu récemment' }),
+      list.length > 1 && el('button', { class: 'chip g', type: 'button', text: 'Tout marquer lu', onclick: () => { (S.recus || []).forEach(r => { r.seen = true; }); save(); render(); } })));
+    for (const r of list.slice(0, 5)) card.append(el('div', { class: 'ai-i' }, el('div', { class: 'ait' }, el('b', { text: r.icon + ' ' + r.title })), r.detail && el('div', { class: 'hint', style: 'margin-top:4px', text: r.detail }),
+      el('div', { class: 'chips', style: 'margin-top:10px' }, r.go && el('button', { class: 'chip p', type: 'button', text: 'Voir', onclick: () => { r.seen = true; save(); goRecu(r.go); } }), el('button', { class: 'chip g', type: 'button', text: 'OK', onclick: () => { r.seen = true; save(); render(); } }))));
+    v.append(card);
+  }
+  const showRecus = () => { view = 'home'; render(); setTimeout(() => { const c = $('#recus-card'); if (c) c.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 100); };
   async function syncServer() {
     if (!S.srvToken || syncing || navigator.onLine === false) return;
     syncing = true;
@@ -657,36 +714,25 @@
         const ib = (await srv('/api/inbox')).list || [];
         if (ib.length) {
           for (const m of ib) {
-            if (m.file) {                                              // PDF / photo partagé : lu sur le téléphone
-              const ext = /pdf/.test(m.file.mime) ? 'pdf' : /wordprocessing/.test(m.file.mime) ? 'docx' : /spreadsheet/.test(m.file.mime) ? 'xlsx' : /presentation/.test(m.file.mime) ? 'pptx' : (m.file.mime.split('/')[1] || 'bin').slice(0, 10);
-              let d = null;
-              try {
-                const r = await fetch(`${API}/api/inbox/file?id=${encodeURIComponent(m.id)}`, { headers: { Authorization: 'Bearer ' + S.srvToken } });
-                if (!r.ok) throw new Error('fichier ' + r.status);
-                const txt = await readFile(new File([await r.blob()], 'partage.' + ext, { type: m.file.mime }), true);
-                if (txt.replace(/\s/g, '').length >= 15) d = E.extractDoc(txt);
-              } catch (e) {}
-              S.items.unshift(d
-                ? mk({ title: d.title, date: d.date || '', time: d.time || '', notes: d.notes || '', cat: d.kind === 'facture' || d.kind === 'rdv' ? 'Admin' : 'Document', imp: d.imp || 2 })
-                : mk({ title: 'Document reçu (illisible, à regarder)', cat: 'Document', imp: 2 }));
-              continue;
-            }
+            const n0 = S.items.length;
+            await (async () => {
+            if (m.file) { await inboxFile(m); return; }
             let raw = (m.text || '').replace(/^﻿/, '').trim();
             if (/^BEGIN:VCARD/i.test(raw)) {                          // fiche contact partagée
               const g = re => ((raw.match(re) || [])[1] || '').trim();
               const nm = g(/^FN[^:\n]*:(.+)$/mi) || g(/^N[^:\n]*:(.+)$/mi).replace(/;+/g, ' ').trim(), tel = g(/^TEL[^:\n]*:(.+)$/mi), em = g(/^EMAIL[^:\n]*:(.+)$/mi), org = g(/^ORG[^:\n]*:(.+)$/mi).replace(/;/g, ' ');
               S.items.unshift(mk({ title: 'Contact : ' + (nm || 'sans nom'), notes: [org, tel && 'Tél : ' + tel, em && 'Mail : ' + em].filter(Boolean).join('\n'), cat: 'Contact', imp: 2 }));
-              continue;
+              return;
             }
             if (/^BEGIN:VCALENDAR/i.test(raw)) {                      // événement de calendrier partagé
               const g = re => ((raw.match(re) || [])[1] || '').trim(), d = g(/^DTSTART[^:\n]*:(\d{8})(?:T(\d{4}))?/mi), tt = (raw.match(/^DTSTART[^:\n]*:\d{8}T(\d{4})/mi) || [])[1] || '';
               S.items.unshift(mk({ title: g(/^SUMMARY[^:\n]*:(.+)$/mi) || 'Événement reçu', date: d ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` : '', time: tt ? tt.slice(0, 2) + ':' + tt.slice(2) : '', notes: g(/^LOCATION[^:\n]*:(.+)$/mi), cat: 'Agenda', imp: 2 }));
-              continue;
+              return;
             }
             if (/^https?:\/\/\S+$/i.test(raw)) {                       // lien seul (page, article, plan)
               let host = raw; try { host = new URL(raw).hostname.replace(/^www\./, ''); } catch (e) {}
               S.items.unshift(mk({ title: 'Lien : ' + host, notes: raw, cat: 'Lien', imp: 2 }));
-              continue;
+              return;
             }
             if (/^\s*(<!doctype html|<html)/i.test(raw)) raw = raw.replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 4000);
             m.text = raw;
@@ -696,10 +742,12 @@
               const kinds = { tache: 'Message', evenement: 'Agenda', reponse: 'Répondre', info: 'Info' };
               S.items.unshift(mk({ title: ai.title, date: ai.date, time: ai.time, imp: ai.importance, cat: kinds[ai.kind] || 'Message', ai: true,
                 notes: [ai.summary, ai.who && 'De : ' + ai.who, '— Message d\'origine —\n' + raw.slice(0, 1500)].filter(Boolean).join('\n') }));
-              continue;
+              return;
             }
             const p = E.parse(m.text), title = (p.title || m.text).split('\n')[0].slice(0, 120), ap = E.autoPrio(m.text);
             S.items.unshift(mk({ title, notes: (m.from ? 'De : ' + m.from + '\n' : '') + m.text, cat: 'Message', date: p.date || '', time: p.time || '', imp: p.imp === 3 ? 3 : (ap.sure ? ap.imp : 2) }));
+            })();
+            if (S.items.length > n0 && !m._logged) { const it = S.items[0]; logRecu({ icon: ({ Contact: '👤', Agenda: '📅', Lien: '🔗', Mail: '✉️' })[it.cat] || '📝', title: it.title, detail: 'Ajouté à ton planning' + (it.date ? ' · ' + dayLabel(it.date) + (it.time ? ' ' + it.time : '') : ''), go: { item: it.id } }); }
           }
           await srv('/api/inbox/ack', { ids: ib.map(m => m.id) }); ch = true;
         }
@@ -938,6 +986,7 @@
       el('div', {}, el('div', { class: 'date', text: new Date().toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' }) }),
         el('h1', { text: h < 6 ? 'Bonne nuit 🌙' : h < 18 ? 'Bonjour 👋' : 'Bonsoir 🌆' }))));
 
+    renderRecus(v);
     if (S.gacc && Object.keys(S.gacc).length && Date.now() - (S.gsync || 0) > 45 * 60e3) {
       v.append(el('button', { class: 'chip', style: 'margin-bottom:12px', onclick: () => connectGoogle(false), text: `🔄 Actualiser l'agenda (dernière synchro ${rel(S.gsync || 0)})` }));
     }
@@ -1666,5 +1715,7 @@
   if (window.visualViewport) window.visualViewport.addEventListener('resize', () => setTimeout(settle, 150));
   setTimeout(loadPlan, 3000);
   tick(); render(); syncServer();
+  if (location.hash === '#recus') syncServer().then(showRecus);                // ouverture depuis la notification « Reçu »
+  if ('serviceWorker' in navigator) navigator.serviceWorker.addEventListener('message', e => { if (e.data && e.data.go === '#recus') syncServer().then(showRecus); });
   window.__app = { get S() { return S; }, ask, handleFile, render, tick, mk, setView: v => { view = v; render(); } }; // utile pour les tests
 })();
