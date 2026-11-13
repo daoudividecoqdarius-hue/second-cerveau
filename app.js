@@ -1,7 +1,7 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.13-36';
+  const VERSION = '2026.11.13-37';
   const API = 'https://second-cerveau-api.second-cerveau-api.workers.dev'; // ton serveur Cloudflare (adresse publique, sans secret)
   const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
@@ -379,7 +379,7 @@
       if (!fin && !m.t.trim()) throw new Error('réponse vide');
     } catch (e) {
       if (e.name === 'AbortError') { if (m.t.trim()) m.t += '\n\n_(arrêté)_'; else S.chat = S.chat.filter(x => x !== m); }
-      else { m.err = /failed to fetch|load failed|network/i.test(e.message) ? 'Pas de connexion internet' : e.message; m.retry = text; }
+      else { m.err = /failed to fetch|load failed|network/i.test(e.message) ? 'Pas de connexion internet' : e.message; m.retry = text; if (!/failed to fetch|load failed|network/i.test(e.message)) reportError('ia', e.message, { q: String(text).slice(0, 60) }); }
     } finally { m.stream = false; aiBusy = false; aiCtl = null; save(); render(); if (!m.err && m.t) learnFrom(text, m); }
   }
   /* Applique une action validée par un bouton ; renvoie de quoi l'annuler (gardé dans le journal) */
@@ -1278,6 +1278,32 @@
     };
     draw();
   }
+  /* ---------- Santé du système : l'app signale ses plantages au serveur (l'admin les relit chaque jour) ---------- */
+  const errSeen = new Set();
+  function reportError(kind, msg, ctx) {
+    try {
+      if (!S.srvToken || navigator.onLine === false) return;
+      const m = String(msg || 'erreur').slice(0, 300), k = kind + '|' + m; if (errSeen.has(k) || errSeen.size >= 15) return; errSeen.add(k);
+      srv('/api/log', { kind, msg: m, ctx: Object.assign({ v: VERSION, vue: view }, ctx || {}) }).catch(() => {});
+    } catch (e) {}
+  }
+  window.addEventListener('error', e => reportError('js', (e.message || 'erreur') + ' @' + String(e.filename || '').split('/').pop() + ':' + e.lineno));
+  window.addEventListener('unhandledrejection', e => reportError('promesse', e.reason && (e.reason.message || e.reason)));
+  async function loadAdminNotes() { try { const r = await srv('/api/admin/notes'); S.adminNotes = r.notes || []; save(); const b = $('#adminnotes'); if (b) drawAdminNotes(b); } catch (e) {} }
+  function drawAdminNotes(box) {
+    box.innerHTML = ''; const n = (S.adminNotes || [])[0];
+    box.append(el('p', { class: 'hint', text: n ? `Dernier contrôle ${rel(n.ts)} : ${n.note}` : 'Aucun contrôle pour l’instant : il aura lieu automatiquement.' }));
+  }
+  function renderSante(v) {
+    const box = el('div', { id: 'adminnotes' }); drawAdminNotes(box); setTimeout(loadAdminNotes, 50);
+    const inp = el('input', { type: 'text', class: 'add-in', placeholder: 'Ex : la notif de 8 h n’est pas arrivée', style: 'width:100%;margin:8px 0' });
+    v.append(el('div', { class: 'card' }, el('h3', { text: '🛠️ Santé et problèmes' }),
+      el('p', { text: 'Chaque jour, un contrôle vérifie le serveur, les erreurs et tes 👎, et corrige ce qui peut l’être. Tu peux aussi me signaler un problème (ou une idée) tout de suite, même si tu n’as pas le temps de l’expliquer en détail.' }),
+      box, inp, el('div', { class: 'chips' }, el('button', { class: 'chip p', type: 'button', text: 'Signaler un problème', onclick: async () => {
+        const t = inp.value.trim(); if (!t) { toast('Écris quelques mots'); return; }
+        try { await srv('/api/log', { kind: 'signalement', msg: t, ctx: { v: VERSION, vue: view } }); inp.value = ''; toast('Merci, je regarderai ça au prochain contrôle'); } catch (e) { toast('Envoi impossible pour l’instant'); }
+      } }))));
+  }
   function renderSettings(v) {
     v.append(el('div', { class: 'top' }, el('div', {}, el('div', { class: 'date', text: 'Personnalise ton cerveau' }), el('h1', { text: 'Réglages ⚙️' }))));
     v.append(el('div', { class: 'card' }, el('h3', { text: '🔄 Mise à jour' }),
@@ -1327,6 +1353,7 @@
     v.append(el('div', { class: 'card' }, el('h3', { text: '🔠 Taille du texte' }),
       el('p', { text: 'Pour lire plus confortablement.' }),
       el('div', { class: 'chips' }, ...[[100, 'Normal'], [115, 'Grand'], [130, 'Très grand']].map(([p, t]) => el('button', { class: 'chip' + ((S.textPct || 100) === p ? ' p' : ''), type: 'button', text: t, onclick: () => { S.textPct = p; applyTextSize(); save(); render(); } })))));
+    renderSante(v);
     v.append(el('div', { class: 'card' }, el('h3', { text: '📒 Journal de l’assistant' }),
       el('p', { text: (S.journal || []).length ? 'Ce que tu as validé avec les boutons de l’assistant. Tu peux annuler chaque action.' : 'Rien pour l’instant. Chaque action que tu valides avec un bouton apparaîtra ici, avec un bouton pour l’annuler.' }),
       ...(S.journal || []).slice(0, 12).map(e => el('div', { class: 'jr' }, el('div', {}, el('div', { text: e.label }), el('small', { class: 'hint', text: new Date(e.ts).toLocaleString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) })),
