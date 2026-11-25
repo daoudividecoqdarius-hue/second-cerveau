@@ -468,7 +468,7 @@ body{position:fixed;left:0;right:0;top:var(--app-top,0px);height:var(--app-h,100
 #dock[hidden]{display:none}
 .composer{position:static;padding:0;background:none}
 body.chatv #view{padding-bottom:12px}
-body.kb #tabs{display:none}
+body.kb #tabs{padding-bottom:6px}
 body.kb #dock{padding-bottom:8px}
 body.kb .sugg,body.kb .skills,body.kb .spark{display:none}
 body.kb .hero{justify-content:flex-start;padding-top:4px}
@@ -476,3 +476,8 @@ body.kb .hi{font-size:28px;margin-top:4px}
 /* iOS zoome la page quand un champ fait moins de 16 px : on l'évite partout */
 input.fb-in,input.add-in,input[type=number],input[type=time],input[type=date],select{font-size:16px!important}
 textarea,input[type=text],input[type=search],input[type=password]{font-size:max(16px,1em)}
+
+/* v44 : changement de jour en douceur (fondu) ; la barre d'onglets reste ancrée en bas, même clavier ouvert */
+.daybox.fade{animation:dayin .24s ease}
+@keyframes dayin{from{opacity:.35;transform:translateY(8px)}}
+.wstrip{overscroll-behavior-x:contain}

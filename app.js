@@ -1,7 +1,7 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.26-43';
+  const VERSION = '2026.11.26-44';
   const API = 'https://second-cerveau-api.second-cerveau-api.workers.dev'; // ton serveur Cloudflare (adresse publique, sans secret)
   const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
@@ -1182,50 +1182,72 @@
   }
   const fold = (label, n, isOpen, toggle, rows) => n ? [el('button', { class: 'fold', type: 'button', onclick: toggle }, el('span', { text: label }), el('span', { class: 'n', text: String(n) }), el('span', { class: 'chev', text: isOpen ? '▴' : '▾' })), ...(isOpen ? rows : [])] : [];
 
+  let planStripX = 0;
   function renderHome(v) {
     const now = Date.now(), td = today(), { evs, dated, late, day } = dayList();
-    const sel = planDay && planDay > td ? planDay : td, sd = new Date(sel + 'T00:00');
-    v.append(el('div', { class: 'top' },
-      el('div', {}, el('div', { class: 'date', text: sd.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' }) }), el('h1', { text: 'Planning' })),
-      sel !== td ? el('button', { class: 'chip', type: 'button', text: "Aujourd'hui", onclick: () => { planDay = null; render(); } }) : null));
+    let sel = planDay && planDay > td ? planDay : td;
+    const dateEl = el('div', { class: 'date' }), chipEl = el('button', { class: 'chip', type: 'button', text: "Aujourd'hui", onclick: () => pickDay(td) });
+    v.append(el('div', { class: 'top' }, el('div', {}, dateEl, el('h1', { text: 'Planning' })), chipEl));
 
-    /* bandeau des 3 prochaines semaines */
-    const strip = el('div', { class: 'wstrip' });
+    /* bandeau des 3 prochaines semaines : construit une fois, il ne bouge plus quand on change de jour */
+    const strip = el('div', { class: 'wstrip' }), btns = {};
     for (let k = 0; k < 21; k++) {
       const ds = E.dstr(addDays(k)), d = new Date(ds + 'T00:00'), its = k === 0 ? [...late, ...day(ds)] : day(ds);
       const dots = its.slice(0, 3).map(i => el('i', { style: 'background:' + (!i.ro && isLate(i) ? 'var(--red)' : kindCol(i)) }));
-      strip.append(el('button', { class: 'wd' + (ds === sel ? ' on' : '') + (ds === td ? ' now' : ''), type: 'button', onclick: () => { planDay = ds === td ? null : ds; render(); } },
-        el('small', { text: d.toLocaleDateString('fr-FR', { weekday: 'short' }).replace('.', '') }), el('b', { text: String(d.getDate()) }), el('span', { class: 'wdots' }, ...dots)));
+      btns[ds] = el('button', { class: 'wd' + (ds === td ? ' now' : ''), type: 'button', onclick: () => pickDay(ds) },
+        el('small', { text: d.toLocaleDateString('fr-FR', { weekday: 'short' }).replace('.', '') }), el('b', { text: String(d.getDate()) }), el('span', { class: 'wdots' }, ...dots));
+      strip.append(btns[ds]);
     }
     v.append(strip);
-    setTimeout(() => { const o = strip.querySelector('.on'); if (o) strip.scrollLeft = Math.max(0, o.offsetLeft - 12); }, 0);
+    strip.scrollLeft = planStripX;                                   // même position qu'avant le redessin : pas de saut
+    strip.addEventListener('scroll', () => { planStripX = strip.scrollLeft; }, { passive: true });
+    const box = el('div', { class: 'daybox' });
+    v.append(box);
 
-    /* la journée choisie */
-    const items = day(sel), timed = items.filter(i => i.time), untimed = items.filter(i => !i.time), done = S.items.filter(i => i.done && i.date === sel).sort(byTime);
-    const wk = sd.toLocaleDateString('fr-FR', { weekday: 'long' });
-    v.append(el('div', { class: 'pl-title' }, el('b', { text: sel === td ? "Aujourd'hui" : wk.charAt(0).toUpperCase() + wk.slice(1) }), el('span', { text: sd.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' }) + (items.length || done.length ? ` · ${items.length} à faire${done.length ? ', ' + done.length + ' fait' + (done.length > 1 ? 's' : '') : ''}` : '') })));
-    if (sel === td && late.length) {
-      v.append(el('div', { class: 'pl-h late', text: `En retard · ${late.length}` }), ...late.map(i => pcard(i, true)));
-      v.append(el('button', { class: 'more', type: 'button', text: lateArmed ? 'Confirmer : tout reporter à demain 9 h ?' : '↪ Tout reporter à demain 9 h', onclick: () => {
-        if (!lateArmed) { lateArmed = true; render(); setTimeout(() => { lateArmed = false; render(); }, 4000); return; }
-        lateArmed = false; const d = E.dstr(addDays(1)); for (const i of late) { i.date = d; i.time = '09:00'; i.lastNotified = Date.now(); i.alertOpen = false; i.snoozeUntil = 0; }
-        save(); toast(`${late.length} reportée${late.length > 1 ? 's' : ''} à demain 9 h`); render(); } }));
-    }
-    if (untimed.length) v.append(el('div', { class: 'pl-h', text: 'Sans heure' }), ...untimed.map(i => pcard(i)));
-    if (timed.length) {
-      v.append(el('div', { class: 'pl-h', text: sel === td ? 'Dans la journée' : 'Programme' }));
-      let placed = sel !== td;
-      for (const i of timed) {
-        if (!placed && E.dueAt(i) > now) { v.append(el('div', { class: 'nowline', text: 'Maintenant ' + String(new Date().getHours()).padStart(2, '0') + ':' + String(new Date().getMinutes()).padStart(2, '0') })); placed = true; }
-        v.append(pcard(i));
+    function fillDay() {
+      const sd = new Date(sel + 'T00:00');
+      dateEl.textContent = sd.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+      chipEl.hidden = sel === td;
+      for (const ds in btns) btns[ds].classList.toggle('on', ds === sel);
+      box.replaceChildren();
+      const items = day(sel), timed = items.filter(i => i.time), untimed = items.filter(i => !i.time), done = S.items.filter(i => i.done && i.date === sel).sort(byTime);
+      const wk = sd.toLocaleDateString('fr-FR', { weekday: 'long' }), hm = () => String(new Date().getHours()).padStart(2, '0') + ':' + String(new Date().getMinutes()).padStart(2, '0');
+      box.append(el('div', { class: 'pl-title' }, el('b', { text: sel === td ? "Aujourd'hui" : wk.charAt(0).toUpperCase() + wk.slice(1) }), el('span', { text: sd.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' }) + (items.length || done.length ? ` · ${items.length} à faire${done.length ? ', ' + done.length + ' fait' + (done.length > 1 ? 's' : '') : ''}` : '') })));
+      if (sel === td && late.length) {
+        box.append(el('div', { class: 'pl-h late', text: `En retard · ${late.length}` }), ...late.map(i => pcard(i, true)));
+        box.append(el('button', { class: 'more', type: 'button', text: lateArmed ? 'Confirmer : tout reporter à demain 9 h ?' : '↪ Tout reporter à demain 9 h', onclick: () => {
+          if (!lateArmed) { lateArmed = true; render(); setTimeout(() => { lateArmed = false; render(); }, 4000); return; }
+          lateArmed = false; const d = E.dstr(addDays(1)); for (const i of late) { i.date = d; i.time = '09:00'; i.lastNotified = Date.now(); i.alertOpen = false; i.snoozeUntil = 0; }
+          save(); toast(`${late.length} reportée${late.length > 1 ? 's' : ''} à demain 9 h`); render(); } }));
       }
-      if (!placed) v.append(el('div', { class: 'nowline', text: 'Maintenant ' + String(new Date().getHours()).padStart(2, '0') + ':' + String(new Date().getMinutes()).padStart(2, '0') }));
+      if (untimed.length) box.append(el('div', { class: 'pl-h', text: 'Sans heure' }), ...untimed.map(i => pcard(i)));
+      if (timed.length) {
+        box.append(el('div', { class: 'pl-h', text: sel === td ? 'Dans la journée' : 'Programme' }));
+        let placed = sel !== td;
+        for (const i of timed) {
+          if (!placed && E.dueAt(i) > now) { box.append(el('div', { class: 'nowline', text: 'Maintenant ' + hm() })); placed = true; }
+          box.append(pcard(i));
+        }
+        if (!placed) box.append(el('div', { class: 'nowline', text: 'Maintenant ' + hm() }));
+      }
+      if (!items.length && !(sel === td && late.length)) {
+        box.append(el('div', { class: 'empty' }, el('div', { text: sel === td ? 'Rien de prévu aujourd’hui 🎉' : 'Rien de prévu ce jour-là' }),
+          el('button', { class: 'chip p', type: 'button', style: 'margin-top:12px', text: '＋ Ajouter', onclick: () => { openSheet(null); $('#s-date').value = sel; } })));
+      }
+      if (done.length) box.append(el('div', { class: 'pl-h', text: 'Fait' }), ...done.map(i => pcard(i)));
     }
-    if (!items.length && !(sel === td && late.length)) {
-      v.append(el('div', { class: 'empty' }, el('div', { text: sel === td ? 'Rien de prévu aujourd’hui 🎉' : 'Rien de prévu ce jour-là' }),
-        el('button', { class: 'chip p', type: 'button', style: 'margin-top:12px', text: '＋ Ajouter', onclick: () => { openSheet(null); $('#s-date').value = sel; } })));
+    /* changer de jour : on ne redessine QUE le contenu du jour (fondu doux), le bandeau et le défilement ne bougent pas */
+    function pickDay(ds) {
+      if (ds === sel) return;
+      sel = ds; planDay = ds === td ? null : ds;
+      box.style.minHeight = box.offsetHeight + 'px';                 // la page ne se raccourcit pas d'un coup
+      fillDay();
+      box.classList.remove('fade'); void box.offsetWidth; box.classList.add('fade');
+      const b = btns[ds], x = b.offsetLeft - (strip.clientWidth - b.offsetWidth) / 2;
+      try { strip.scrollTo({ left: Math.max(0, x), behavior: 'smooth' }); } catch (e) { strip.scrollLeft = Math.max(0, x); }
+      setTimeout(() => { box.style.minHeight = ''; }, 260);
     }
-    if (done.length) v.append(el('div', { class: 'pl-h', text: 'Fait' }), ...done.map(i => pcard(i)));
+    fillDay();
 
     /* le reste, replié */
     const lim = E.dstr(addDays(20));
@@ -1917,7 +1939,7 @@
   const applyRhythm = () => { if (E.setRhythm) E.setRhythm(S.wake == null ? 600 : S.wake, S.sleep == null ? 1380 : S.sleep); };   // lever 10 h / coucher 23 h par défaut : pas de rappel pendant le sommeil
   applyRhythm();
   const toHM = m => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0'), fromHM = s => { const [h, m] = String(s).split(':').map(Number); return h * 60 + (m || 0); };
-  document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => { view = b.dataset.v; stickChat = false; panelOpen = false; if (view === 'home') planDay = null; render(); scroller().scrollTop = 0; drawPanel(); });
+  document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => { view = b.dataset.v; stickChat = false; panelOpen = false; if (view === 'home') { planDay = null; planStripX = 0; } render(); scroller().scrollTop = 0; drawPanel(); });
 
   /* ================= Démarrage ================= */
   load();
