@@ -1,7 +1,7 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.25-38';
+  const VERSION = '2026.11.25-39';
   const API = 'https://second-cerveau-api.second-cerveau-api.workers.dev'; // ton serveur Cloudflare (adresse publique, sans secret)
   const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
@@ -872,7 +872,7 @@
     const left = ev ? el('span', { class: 'ico', text: '📅' })
       : el('button', { class: 'chk' + (it.done ? ' on' : ''), 'aria-label': 'Terminer', onclick: e => { e.stopPropagation(); it.done ? reopen(it) : complete(it); }, text: it.done ? '✓' : '' });
     const meta = el('div', { class: 'm' },
-      el('span', { class: 'tag', text: (it.secret ? '🔒 ' : '') + it.cat }),
+      el('span', { class: 'tag t-' + String(it.cat || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z]/g, ''), text: (it.secret ? '🔒 ' : '') + it.cat }),
       it.date && el('span', { class: late ? 'late' : '', text: when(it) }),
       ev && it.cal && el('span', { text: it.cal }),
       !ev && !it.date && !it.done && it.nextReview && E.reviewDue(it, Date.now()) && el('span', { class: 'late', text: 'à revoir' }));

@@ -314,3 +314,53 @@ h1+.dayhead,.focus+.dayhead,.ast+.dayhead{margin-top:18px}
 /* Mon rythme */
 .rhy{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-top:.5px solid var(--sep);font-size:17px}
 .rhy input{border:0;background:var(--fill);border-radius:10px;padding:8px 12px;font-size:17px;color:var(--txt)}
+
+/* ================= v39 : look « jeu » (inspiré de Clash Royale) — couleurs vives, gros boutons en relief, lisibilité d'abord ================= */
+:root{--gold:#ffb800;--gold-d:#c98a00;--acc-d:#0057c2;--ok-d:#1f9b3c;--red-d:#c4241b;--rnd:ui-rounded,"SF Pro Rounded",-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  --acc:#0a6cff;--acc2:#7b3fe4;--ok:#22c55e;--warn:#ff8a00;--red:#ff3b30}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0b1226;--card:#16213f;--bubble:#1d2a4d;--fill:rgba(130,160,255,.16);--sep:rgba(130,160,255,.2);--bd:rgba(130,160,255,.3);--acc:#3d8bff;--gold:#ffc933;--soft:rgba(61,139,255,.22);--mat:rgba(11,18,38,.85)}}
+:root[data-theme="dark"]{--bg:#0b1226;--card:#16213f;--bubble:#1d2a4d;--fill:rgba(130,160,255,.16);--sep:rgba(130,160,255,.2);--bd:rgba(130,160,255,.3);--acc:#3d8bff;--gold:#ffc933;--soft:rgba(61,139,255,.22);--mat:rgba(11,18,38,.85)}
+h1,.dayhead .l,.focus .big,.asth b,.alert .t,.card h3,.obc h2,#sheet h3,.jr b{font-family:var(--rnd);font-weight:800;letter-spacing:-.015em}
+h1{font-size:36px}
+/* Boutons en relief : on voit tout de suite que ça se touche, et ça s'enfonce au toucher */
+.chip,.btn{font-family:var(--rnd);font-weight:800;border-radius:14px;box-shadow:0 3px 0 color-mix(in srgb,var(--acc) 45%,#000 0%)}
+.chip{background:var(--soft);color:var(--acc);box-shadow:0 3px 0 color-mix(in srgb,var(--acc) 35%,transparent)}
+.chip.p,.btn{background:linear-gradient(180deg,color-mix(in srgb,var(--acc) 82%,#fff),var(--acc));color:#fff;box-shadow:0 4px 0 var(--acc-d)}
+.chip.g{box-shadow:0 3px 0 color-mix(in srgb,var(--mut) 30%,transparent)}
+.btn.ghost{box-shadow:0 3px 0 color-mix(in srgb,var(--acc) 35%,transparent)}
+.btn.danger{box-shadow:0 4px 0 var(--red-d)}
+.chip:active,.btn:active{transform:translateY(3px);box-shadow:none;opacity:1}
+.chip{min-height:42px}
+/* Bandeaux de jour : bannières colorées avec pastille dorée */
+.dayhead{padding:9px 12px;margin:22px 0 10px;border-radius:16px;background:color-mix(in srgb,var(--acc) 12%,var(--card));box-shadow:0 3px 0 color-mix(in srgb,var(--acc) 25%,transparent)}
+.dayhead .l{font-size:18px}
+.dayhead .n{background:var(--gold);color:#4a3200;font-family:var(--rnd);font-weight:800;font-size:14px;min-width:30px;text-align:center;box-shadow:0 2px 0 var(--gold-d)}
+.dayhead.today{background:linear-gradient(135deg,var(--acc),var(--acc2));box-shadow:0 4px 0 var(--acc-d)}
+.dayhead.today .l{color:#fff}.dayhead.today .n{color:#4a3200;background:var(--gold)}
+.dayhead.late{background:linear-gradient(135deg,var(--red),#ff7a3d);box-shadow:0 4px 0 var(--red-d)}
+.dayhead.late .l{color:#fff}.dayhead.late .n{color:#4a3200;background:var(--gold)}
+/* Carte « maintenant » plus vive */
+.focus{background:linear-gradient(145deg,var(--acc) 0%,var(--acc2) 100%);box-shadow:0 6px 0 var(--acc-d),0 14px 30px color-mix(in srgb,var(--acc) 35%,transparent)}
+.focus .big{font-size:25px}
+.ring b{font-family:var(--rnd);font-weight:800;font-size:15px}
+/* Catégories : une couleur par catégorie, reconnaissable d'un coup d'œil */
+.tag{font-family:var(--rnd);font-weight:800;font-size:12.5px;padding:2px 9px;color:#fff;background:#6b7280}
+.tag.t-cours{background:#7b3fe4}.tag.t-admin{background:#ff8a00}.tag.t-mail{background:#0a6cff}.tag.t-message{background:#06b6d4}
+.tag.t-sport{background:#22c55e}.tag.t-idee{background:#ec4899}.tag.t-document{background:#d97706}.tag.t-courses{background:#16a34a}
+/* Lignes de tâches : plus grosses et plus nettes */
+.row{padding:15px 16px}.row .n{font-size:18px;font-weight:600}
+.row .m{font-size:14.5px}
+.chk{width:30px;height:30px;border-width:2.5px;border-color:var(--acc)}
+.chk.on{box-shadow:0 2px 0 var(--ok-d)}
+.dot{width:12px;height:12px;background:var(--gold);box-shadow:0 0 0 3px color-mix(in srgb,var(--gold) 30%,transparent)}
+/* Cartes et barre d'onglets */
+.alert,.card,.ast{box-shadow:0 3px 0 color-mix(in srgb,var(--acc) 18%,transparent),var(--shadow)}
+.alert{box-shadow:inset 0 0 0 2px var(--warn),0 3px 0 color-mix(in srgb,var(--warn) 40%,transparent)}
+#tabs button{font-family:var(--rnd);font-weight:700;font-size:11px}
+#tabs button.on{color:var(--acc)}
+#tabs button.on span{background:var(--gold);color:#4a3200;border-radius:99px;padding:0 8px}
+#fab{background:linear-gradient(180deg,color-mix(in srgb,var(--gold) 90%,#fff),var(--gold));color:#4a3200;box-shadow:0 5px 0 var(--gold-d),0 12px 24px rgba(0,0,0,.25);font-weight:700}
+#fab:active{transform:translateY(4px);box-shadow:0 1px 0 var(--gold-d)}
+.msg.u{background:linear-gradient(180deg,color-mix(in srgb,var(--acc) 85%,#fff),var(--acc));box-shadow:0 3px 0 var(--acc-d)}
+.send{background:linear-gradient(180deg,color-mix(in srgb,var(--acc) 85%,#fff),var(--acc));box-shadow:0 3px 0 var(--acc-d)}
+.send:active{transform:translateY(3px);box-shadow:none}
