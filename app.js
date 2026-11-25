@@ -1,7 +1,7 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.13-37';
+  const VERSION = '2026.11.25-38';
   const API = 'https://second-cerveau-api.second-cerveau-api.workers.dev'; // ton serveur Cloudflare (adresse publique, sans secret)
   const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
@@ -866,7 +866,7 @@
   }
 
   /* ================= Vues ================= */
-  let view = 'home';
+  let view = 'chat';
   function row(it) {
     const ev = !!it.ro, late = !ev && !it.done && isLate(it);
     const left = ev ? el('span', { class: 'ico', text: '📅' })
@@ -980,7 +980,17 @@
     if (rows.length) v.append(card);
   }
 
-  function renderHome(v) {
+  function dayHead(icon, label, items, cls) {
+    const done = items.filter(i => i.done).length, tot = items.length;
+    return el('div', { class: 'dayhead' + (cls ? ' ' + cls : '') },
+      el('div', { class: 'l' }, el('span', { text: icon }), el('span', { text: label })),
+      el('span', { class: 'n', text: tot ? (done ? `${done}/${tot}` : String(tot)) : '' }));
+  }
+  const daySection = (icon, label, items, cls) => items.length ? [dayHead(icon, label, items, cls), ...items.map(row)] : [];
+
+  /* « À faire » : l'essentiel de la journée. full=true (onglet Aujourd'hui) ajoute la semaine, plus tard, et la mémoire ;
+     full=false (en tête de l'Assistant) s'arrête à un aperçu de demain, pour que ça reste court dès l'ouverture de l'app */
+  function renderDueNow(v, full) {
     const now = Date.now(), td = today(), h = new Date().getHours();
     v.append(el('div', { class: 'top' },
       el('div', {}, el('div', { class: 'date', text: new Date().toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' }) }),
@@ -1064,18 +1074,29 @@
     const dated = open().filter(i => i.date);
     const late = dated.filter(isLate).sort(byTime);
     const day = ds => [...dated.filter(i => i.date === ds && !isLate(i)), ...evs.filter(e => e.date === ds)].sort(byTime);
-    v.append(...section('En retard', late, 'red'));
-    v.append(...section("Aujourd'hui", day(td)));
-    const wk = []; for (let k = 1; k <= 7; k++) wk.push(...day(E.dstr(addDays(k))));
-    v.append(...section('Cette semaine', wk));
+    v.append(...daySection('⏰', 'En retard', late, 'late'));
+    v.append(...daySection('☀️', "Aujourd'hui", day(td), 'today'));
+
+    if (!full) {
+      const tmr = day(E.dstr(addDays(1)));
+      v.append(...daySection('🌤️', 'Demain', tmr.slice(0, 4)));
+      if (!dated.length && !evs.length) v.append(el('div', { class: 'empty', text: "Rien pour l'instant. Touche + ou écris-moi ci-dessous : « Rappelle-moi de… »" }));
+      return;
+    }
+    for (let k = 1; k <= 7; k++) {
+      const ds = E.dstr(addDays(k)), items = day(ds); if (!items.length) continue;
+      const label = k === 1 ? 'Demain' : new Date(ds + 'T00:00').toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
+      v.append(...daySection('📆', label, items));
+    }
     const lim = E.dstr(addDays(7));
     const later = [...dated.filter(i => i.date > lim && !isLate(i)), ...evs.filter(e => e.date > lim)].sort(byTime).slice(0, 60);
-    const ls = section('Plus tard', later);
+    const ls = daySection('🗓️', 'Plus tard', later);
     v.append(...(laterAll ? ls : ls.slice(0, 6)));
     if (later.length > 5) v.append(el('button', { class: 'more', type: 'button', text: laterAll ? 'Réduire' : `Voir les ${later.length - 5} autres`, onclick: () => { laterAll = !laterAll; render(); } }));
-    v.append(...section('💭 À revoir', open().filter(i => E.reviewDue(i, now))));
+    v.append(...daySection('💭', 'À revoir', open().filter(i => E.reviewDue(i, now))));
     if (!S.items.length && !S.events.length) v.append(el('div', { class: 'empty', text: "Rien pour l'instant. Appuie sur + ou parle à l'assistant : « Rappelle-moi de… »" }));
   }
+  function renderHome(v) { renderDueNow(v, true); }
 
   function renderBrain(v, noTop) {
     if (!noTop) v.append(el('div', { class: 'top' }, el('div', {}, el('div', { class: 'date', text: 'Tout ce que tu m’as confié' }), el('h1', { text: 'Mémoire 🧠' }))));
@@ -1148,7 +1169,9 @@
     if (row.childNodes.length) b.append(row);
   }
   function renderChat(v) {
-    v.append(el('div', { class: 'top' }, el('div', {}, el('div', { class: 'date', text: aiReady() ? 'IA activée' : 'Mode simple' }), el('h1', { text: 'Assistant' })),
+    renderDueNow(v, false);                                       // dès l'ouverture : ce qu'il y a à faire, bien visible — puis la discussion
+    v.append(el('div', { class: 'jr', style: 'border-top:0;margin-top:22px;padding:0 2px' },
+      el('b', { text: '💬 ' + (aiReady() ? 'Discute avec ton assistant' : 'Discuter (mode simple)') }),
       S.chat.length > 1 && el('button', { class: 'chip', type: 'button', onclick: newChat, text: '✎ Nouveau' })));
     const chat = el('div', { class: 'chat' });
     if (!S.chat.length) S.chat.push({ r: 'a', t: "Salut ! Je suis ton second cerveau. Demande-moi ce que tu veux : planifier ta semaine, un menu, un mail, la météo… ou dis-moi simplement ce que tu dois faire.", ts: Date.now() });

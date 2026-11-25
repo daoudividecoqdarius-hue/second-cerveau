@@ -248,6 +248,17 @@ label input,label select{margin-top:5px;font-weight:400;font-size:17px}
 .jr{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 0;border-top:.5px solid var(--sep);font-size:15px}
 .jr .chip{flex:none}
 
+/* En-tête « jour » : chaque journée saute aux yeux au lieu d'un simple label gris */
+.dayhead{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:24px 2px 8px;padding:0 2px}
+.dayhead .l{display:flex;align-items:center;gap:8px;font-size:16px;font-weight:700;letter-spacing:-.01em}
+.dayhead .l span:first-child{font-size:18px}
+.dayhead .n{font-size:12.5px;font-weight:700;color:var(--mut);background:var(--fill);padding:4px 11px;border-radius:99px;flex:none}
+.dayhead.today .l{color:var(--acc)}
+.dayhead.today .n{color:var(--acc);background:var(--soft)}
+.dayhead.late .l{color:var(--red)}
+.dayhead.late .n{color:var(--red);background:color-mix(in srgb,var(--red) 16%,transparent)}
+h1+.dayhead,.focus+.dayhead,.ast+.dayhead{margin-top:18px}
+
 /* Listes : courses, sport */
 .seg.full{display:flex;width:100%;margin:-4px 0 14px}
 .seg.full button{flex:1;padding:9px 4px;font-size:15px}
