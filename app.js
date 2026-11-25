@@ -1,7 +1,7 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.26-42';
+  const VERSION = '2026.11.26-43';
   const API = 'https://second-cerveau-api.second-cerveau-api.workers.dev'; // ton serveur Cloudflare (adresse publique, sans secret)
   const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
@@ -1346,9 +1346,6 @@
       chat.append(b);
     }
     v.append(chat);
-    const input = el('textarea', { id: 'chatin', rows: '1', placeholder: 'Demande-moi…', enterkeyhint: 'send', autocapitalize: 'sentences' });
-    input.value = chatDraft;
-    const grow = () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 130) + 'px'; };
     if (S.chat.length <= 1 && aiReady()) {                                                // idées pour démarrer
       const sg = el('div', { class: 'sugg' });
       for (const [ic, t, q] of [['📅', 'Planifie ma semaine', 'Aide-moi à planifier ma semaine à partir de mes tâches et de mon agenda.'], ['🥗', 'Menu et courses', 'Prépare-moi un menu sain pour la semaine et la liste de courses.'],
@@ -1357,31 +1354,63 @@
       v.append(sg);
     }
     const sk = el('div', { class: 'skills' });
-    for (const s of enabled().filter(x => !x.hidden)) sk.append(el('button', { class: 'chip', type: 'button', onclick: () => { input.value = s.ex; chatDraft = s.ex; grow(); input.focus(); }, text: `${s.icon} ${s.name}` }));
+    for (const s of enabled().filter(x => !x.hidden)) sk.append(el('button', { class: 'chip', type: 'button', onclick: () => { dockIn.value = s.ex; chatDraft = s.ex; dockGrow(); dockIn.focus(); }, text: `${s.icon} ${s.name}` }));
     v.append(sk);
-    const send = () => { if (aiBusy) return; const t = input.value; if (!t.trim()) return; input.value = ''; chatDraft = ''; grow(); ask(t); };
+    setTimeout(() => { if (stickChat && convo) toBottom(); }, 0);
+  }
+
+
+  /* ---------- Zone de saisie : créée UNE seule fois (jamais reconstruite) → le clavier ne saute plus et le texte ne se perd plus ---------- */
+  let dockIn = null, dockSend = null;
+  const dockGrow = () => { dockIn.style.height = 'auto'; dockIn.style.height = Math.min(dockIn.scrollHeight, 130) + 'px'; };
+  function dockSendMsg() { if (aiBusy) return; const t = dockIn.value; if (!t.trim()) return; dockIn.value = ''; chatDraft = ''; dockGrow(); ask(t); }
+  function buildDock() {
+    const d = $('#dock');
+    dockIn = el('textarea', { id: 'chatin', rows: '1', placeholder: 'Demande-moi…', enterkeyhint: 'send', autocapitalize: 'sentences' });
+    dockIn.oninput = () => { chatDraft = dockIn.value; dockGrow(); };
+    dockIn.onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); dockSendMsg(); } };
     const mic = el('button', { class: 'mic', type: 'button', 'aria-label': 'Parler' }); mic.innerHTML = icon('mic', 20);
     mic.onclick = () => {
       const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (!SR) { say("La dictée vocale n'est pas disponible ici. Utilise le micro du clavier iPhone 🎤 (en bas à droite du clavier).", true); render(); return; }
       if (rec) { rec.stop(); return; }
       rec = new SR(); rec.lang = 'fr-FR'; rec.interimResults = false;
-      rec.onresult = e => { input.value = e.results[0][0].transcript; send(); };
+      rec.onresult = e => { dockIn.value = e.results[0][0].transcript; dockSendMsg(); };
       rec.onend = () => { rec = null; mic.classList.remove('rec'); };
       rec.onerror = () => { rec = null; mic.classList.remove('rec'); say("Le micro n'est pas accessible ici. Utilise le micro du clavier iPhone 🎤 (en bas à droite du clavier).", true); render(); };
       mic.classList.add('rec'); try { rec.start(); } catch (e) {}
     };
-    input.oninput = () => { chatDraft = input.value; grow(); };
-    input.onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } };
     const fileIn = el('input', { type: 'file', accept: 'application/pdf,image/*,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.odp,.rtf,.txt,.csv,.md,.html,.htm,.eml,.ics,.vcf,.json,.epub,.pages', id: 'filein', style: 'display:none' });
-    fileIn.onchange = () => { const f = fileIn.files[0]; if (f) handleFile(f); };
+    fileIn.onchange = () => { const f = fileIn.files[0]; if (f) handleFile(f); fileIn.value = ''; };
     const clip = el('button', { class: 'mic', type: 'button', 'aria-label': 'Ajouter un document', onclick: () => fileIn.click() }); clip.innerHTML = icon('plus', 22);
-    const sendBtn = aiBusy ? el('button', { class: 'send stop', type: 'button', 'aria-label': 'Arrêter', text: '■', onclick: () => { if (aiCtl) aiCtl.abort(); } })
-      : el('button', { class: 'send', type: 'button', onclick: send, 'aria-label': 'Envoyer', text: '↑' });
-    v.append(el('div', { class: 'composer' }, el('div', { class: 'pill' }, clip, input, mic, sendBtn)));
-    setTimeout(() => { grow(); if (stickChat && convo) toBottom(); }, 0);
+    dockSend = el('button', { class: 'send', type: 'button', 'aria-label': 'Envoyer', text: '↑', onclick: () => { if (aiBusy) { if (aiCtl) aiCtl.abort(); } else dockSendMsg(); } });
+    dockSend.addEventListener('pointerdown', e => e.preventDefault());      // le clavier reste ouvert quand on touche « envoyer »
+    d.append(el('div', { class: 'pill' }, clip, dockIn, mic, dockSend), fileIn);
   }
-
+  function syncDock() {                                              // met à jour la zone de saisie sans jamais la reconstruire
+    $('#dock').hidden = view !== 'chat';
+    if (dockSend) { dockSend.className = 'send' + (aiBusy ? ' stop' : ''); dockSend.textContent = aiBusy ? '■' : '↑'; dockSend.setAttribute('aria-label', aiBusy ? 'Arrêter' : 'Envoyer'); }
+    if (dockIn && dockIn.value !== chatDraft) { dockIn.value = chatDraft; dockGrow(); }
+  }
+  /* iPhone (web app) : à l'ouverture du clavier, Safari ne redimensionne pas la page : il la fait glisser et masque la saisie.
+     On suit la zone réellement visible (visualViewport), on fige la page, et on cache la barre d'onglets pendant la frappe. */
+  function keyboardFit() {
+    const vv = window.visualViewport, root = document.documentElement; let raf = 0;
+    const fit = () => {
+      raf = 0;
+      const h = vv ? vv.height : window.innerHeight, top = vv ? vv.offsetTop : 0;
+      root.style.setProperty('--app-h', Math.round(h) + 'px'); root.style.setProperty('--app-top', Math.round(top) + 'px');
+      const kb = window.innerHeight - h > 120, was = document.body.classList.contains('kb');
+      document.body.classList.toggle('kb', kb);
+      if (window.scrollY) window.scrollTo(0, 0);
+      if (kb && !was && view === 'chat' && S.chat.length > 1) toBottom();
+    };
+    const sched = () => { if (!raf) raf = requestAnimationFrame(fit); };
+    if (vv) { vv.addEventListener('resize', sched); vv.addEventListener('scroll', sched); }
+    window.addEventListener('scroll', () => { if (window.scrollY) window.scrollTo(0, 0); }, { passive: true });
+    window.addEventListener('orientationchange', sched);
+    fit();
+  }
 
   async function updateApp(force) {
     const m = $('#upmsg'), say2 = t => { if (m) m.textContent = t; };
@@ -1835,7 +1864,7 @@
   }
 
   function render() {
-    const v = $('#view'); const keep = document.activeElement && document.activeElement.id === 'chatin';
+    const v = $('#view');
     const scrollY = v.scrollTop;
     v.innerHTML = '';
     ({ home: renderHome, cal: renderCal, lists: renderLists, chat: renderChat, settings: renderSettings })[view in { home: 1, cal: 1, lists: 1, chat: 1, settings: 1 } ? view : 'home'](v);
@@ -1844,7 +1873,7 @@
     if (panelOpen) drawPanel();
     $('#fab').hidden = view === 'chat' || view === 'settings';
     if (view !== 'chat' || !stickChat) v.scrollTop = scrollY;
-    if (keep) { const i = $('#chatin'); if (i) i.focus(); }
+    syncDock();
   }
 
   /* ================= Fiche d'édition ================= */
@@ -1881,7 +1910,7 @@
     } else S.items.unshift(mk(f));
     save(); closeSheet(); render();
   };
-  if (!S.onboarded && S.items.length < 6) setTimeout(showOnboarding, 600); else if (!S.onboarded) { S.onboarded = true; save(); }
+  S.onboarded = true;                                           // plus de présentation automatique (elle reste dans Réglages)
   $('#fab').onclick = () => { openSheet(null); if (view === 'cal' && calDate) $('#s-date').value = calDate; else if (view === 'home' && planDay) $('#s-date').value = planDay; };   // depuis l'agenda : le jour affiché est prérempli
   const applyTextSize = () => { document.documentElement.style.webkitTextSizeAdjust = document.documentElement.style.textSizeAdjust = (S.textPct || 100) + '%'; };
   applyTextSize();
@@ -1892,6 +1921,7 @@
 
   /* ================= Démarrage ================= */
   load();
+  buildDock(); keyboardFit();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
   const pair = location.hash.match(/pair=([\w-]{20,})/);        // lien d'appairage : #pair=…
   if (pair) { S.srvToken = pair[1]; save(); try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {} say("☁️ Appairage réussi : ton téléphone est relié au serveur. Va dans Réglages pour activer les rappels app fermée.", true); }
