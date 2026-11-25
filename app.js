@@ -1,7 +1,7 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.26-41';
+  const VERSION = '2026.11.26-42';
   const API = 'https://second-cerveau-api.second-cerveau-api.workers.dev'; // ton serveur Cloudflare (adresse publique, sans secret)
   const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
@@ -1160,27 +1160,79 @@
     document.body.append(w); body.scrollTop = st;
   }
 
-  /* Onglet « Aujourd'hui » : le planning complet, jour par jour */
+  /* ---------- Planning : bandeau de la semaine + journée en frise (inspiré de Structured, Things 3, Tweek) ----------
+     1) on choisit un jour dans le bandeau (3 semaines, pastilles = ce qu'il y a ce jour-là)
+     2) la journée s'affiche en frise : heure à gauche, barre de couleur par catégorie, case à cocher à droite, ligne « maintenant »
+     3) en retard (aujourd'hui seulement), « Plus tard » et « À revoir » restent repliés */
+  let planDay = null, planLater = false, planReview = false;
+  const catSlug = c => String(c || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z]/g, '');
+  const CATCOL = { cours: '#7b3fe4', admin: '#ff8a00', mail: '#0a6cff', message: '#06b6d4', sport: '#22c55e', idee: '#ec4899', document: '#d97706', courses: '#16a34a' };
+  const kindCol = it => it.ro ? '#14b8a6' : (CATCOL[catSlug(it.cat)] || '#6b7280');
+  function pcard(it, asDate) {
+    const ev = !!it.ro, lt = !ev && !it.done && isLate(it), col = lt ? 'var(--red)' : kindCol(it), td = today();
+    const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
+    const past = ev && it.date === td && toMin(it.time) != null && (toMin(it.endTime) != null ? toMin(it.endTime) : toMin(it.time) + 60) <= nowMin;
+    const tm = asDate ? new Date(it.date + 'T00:00').toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' }).replace('.', '') : (it.time || '—');
+    return el('div', { class: 'pc' + (it.done ? ' done' : '') + (past ? ' past' : ''), style: '--c:' + col, onclick: ev ? null : () => openSheet(it) },
+      el('div', { class: 'pt' + (lt ? ' late' : '') }, el('b', { text: tm }), ev && it.endTime ? el('small', { text: it.endTime }) : null),
+      el('div', { class: 'pbar' }),
+      el('div', { class: 'pb' }, el('div', { class: 'pn', text: it.title }),
+        el('div', { class: 'pm' }, el('span', { class: 'ptag', text: (it.secret ? '🔒 ' : '') + (ev ? (it.cal || 'Agenda') : it.cat) }), !ev && it.imp === 3 && !it.done ? el('span', { class: 'dot' }) : null)),
+      ev ? null : el('button', { class: 'chk' + (it.done ? ' on' : ''), type: 'button', 'aria-label': 'Terminer', onclick: e => { e.stopPropagation(); it.done ? reopen(it) : complete(it); }, text: it.done ? '✓' : '' }));
+  }
+  const fold = (label, n, isOpen, toggle, rows) => n ? [el('button', { class: 'fold', type: 'button', onclick: toggle }, el('span', { text: label }), el('span', { class: 'n', text: String(n) }), el('span', { class: 'chev', text: isOpen ? '▴' : '▾' })), ...(isOpen ? rows : [])] : [];
+
   function renderHome(v) {
-    const now = Date.now(), td = today(), { evs, dated, late, day } = dayList(), h = new Date().getHours();
+    const now = Date.now(), td = today(), { evs, dated, late, day } = dayList();
+    const sel = planDay && planDay > td ? planDay : td, sd = new Date(sel + 'T00:00');
     v.append(el('div', { class: 'top' },
-      el('div', {}, el('div', { class: 'date', text: new Date().toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' }) }),
-        el('h1', { text: 'Mon planning' }))));
-    renderFocus(v);
-    v.append(...daySection('⏰', 'En retard', late, 'late'));
-    v.append(...daySection('☀️', "Aujourd'hui", day(td), 'today'));
-    for (let k = 1; k <= 7; k++) {
-      const ds = E.dstr(addDays(k)), items = day(ds); if (!items.length) continue;
-      const label = k === 1 ? 'Demain' : new Date(ds + 'T00:00').toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
-      v.append(...daySection('📆', label, items));
+      el('div', {}, el('div', { class: 'date', text: sd.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' }) }), el('h1', { text: 'Planning' })),
+      sel !== td ? el('button', { class: 'chip', type: 'button', text: "Aujourd'hui", onclick: () => { planDay = null; render(); } }) : null));
+
+    /* bandeau des 3 prochaines semaines */
+    const strip = el('div', { class: 'wstrip' });
+    for (let k = 0; k < 21; k++) {
+      const ds = E.dstr(addDays(k)), d = new Date(ds + 'T00:00'), its = k === 0 ? [...late, ...day(ds)] : day(ds);
+      const dots = its.slice(0, 3).map(i => el('i', { style: 'background:' + (!i.ro && isLate(i) ? 'var(--red)' : kindCol(i)) }));
+      strip.append(el('button', { class: 'wd' + (ds === sel ? ' on' : '') + (ds === td ? ' now' : ''), type: 'button', onclick: () => { planDay = ds === td ? null : ds; render(); } },
+        el('small', { text: d.toLocaleDateString('fr-FR', { weekday: 'short' }).replace('.', '') }), el('b', { text: String(d.getDate()) }), el('span', { class: 'wdots' }, ...dots)));
     }
-    const lim = E.dstr(addDays(7));
+    v.append(strip);
+    setTimeout(() => { const o = strip.querySelector('.on'); if (o) strip.scrollLeft = Math.max(0, o.offsetLeft - 12); }, 0);
+
+    /* la journée choisie */
+    const items = day(sel), timed = items.filter(i => i.time), untimed = items.filter(i => !i.time), done = S.items.filter(i => i.done && i.date === sel).sort(byTime);
+    const wk = sd.toLocaleDateString('fr-FR', { weekday: 'long' });
+    v.append(el('div', { class: 'pl-title' }, el('b', { text: sel === td ? "Aujourd'hui" : wk.charAt(0).toUpperCase() + wk.slice(1) }), el('span', { text: sd.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' }) + (items.length || done.length ? ` · ${items.length} à faire${done.length ? ', ' + done.length + ' fait' + (done.length > 1 ? 's' : '') : ''}` : '') })));
+    if (sel === td && late.length) {
+      v.append(el('div', { class: 'pl-h late', text: `En retard · ${late.length}` }), ...late.map(i => pcard(i, true)));
+      v.append(el('button', { class: 'more', type: 'button', text: lateArmed ? 'Confirmer : tout reporter à demain 9 h ?' : '↪ Tout reporter à demain 9 h', onclick: () => {
+        if (!lateArmed) { lateArmed = true; render(); setTimeout(() => { lateArmed = false; render(); }, 4000); return; }
+        lateArmed = false; const d = E.dstr(addDays(1)); for (const i of late) { i.date = d; i.time = '09:00'; i.lastNotified = Date.now(); i.alertOpen = false; i.snoozeUntil = 0; }
+        save(); toast(`${late.length} reportée${late.length > 1 ? 's' : ''} à demain 9 h`); render(); } }));
+    }
+    if (untimed.length) v.append(el('div', { class: 'pl-h', text: 'Sans heure' }), ...untimed.map(i => pcard(i)));
+    if (timed.length) {
+      v.append(el('div', { class: 'pl-h', text: sel === td ? 'Dans la journée' : 'Programme' }));
+      let placed = sel !== td;
+      for (const i of timed) {
+        if (!placed && E.dueAt(i) > now) { v.append(el('div', { class: 'nowline', text: 'Maintenant ' + String(new Date().getHours()).padStart(2, '0') + ':' + String(new Date().getMinutes()).padStart(2, '0') })); placed = true; }
+        v.append(pcard(i));
+      }
+      if (!placed) v.append(el('div', { class: 'nowline', text: 'Maintenant ' + String(new Date().getHours()).padStart(2, '0') + ':' + String(new Date().getMinutes()).padStart(2, '0') }));
+    }
+    if (!items.length && !(sel === td && late.length)) {
+      v.append(el('div', { class: 'empty' }, el('div', { text: sel === td ? 'Rien de prévu aujourd’hui 🎉' : 'Rien de prévu ce jour-là' }),
+        el('button', { class: 'chip p', type: 'button', style: 'margin-top:12px', text: '＋ Ajouter', onclick: () => { openSheet(null); $('#s-date').value = sel; } })));
+    }
+    if (done.length) v.append(el('div', { class: 'pl-h', text: 'Fait' }), ...done.map(i => pcard(i)));
+
+    /* le reste, replié */
+    const lim = E.dstr(addDays(20));
     const later = [...dated.filter(i => i.date > lim && !isLate(i)), ...evs.filter(e => e.date > lim)].sort(byTime).slice(0, 60);
-    const ls = daySection('🗓️', 'Plus tard', later);
-    v.append(...(laterAll ? ls : ls.slice(0, 6)));
-    if (later.length > 5) v.append(el('button', { class: 'more', type: 'button', text: laterAll ? 'Réduire' : `Voir les ${later.length - 5} autres`, onclick: () => { laterAll = !laterAll; render(); } }));
-    v.append(...daySection('💭', 'À revoir', open().filter(i => E.reviewDue(i, now))));
-    renderInbox(v);
+    v.append(...fold('🗓️ Plus tard', later.length, planLater, () => { planLater = !planLater; render(); }, later.map(row)));
+    const rev = open().filter(i => E.reviewDue(i, now));
+    v.append(...fold('💭 À revoir', rev.length, planReview, () => { planReview = !planReview; render(); }, rev.map(row)));
     if (!S.items.length && !S.events.length) v.append(el('div', { class: 'empty', text: "Rien pour l'instant. Appuie sur + ou parle à l'assistant : « Rappelle-moi de… »" }));
   }
 
@@ -1830,13 +1882,13 @@
     save(); closeSheet(); render();
   };
   if (!S.onboarded && S.items.length < 6) setTimeout(showOnboarding, 600); else if (!S.onboarded) { S.onboarded = true; save(); }
-  $('#fab').onclick = () => { openSheet(null); if (view === 'cal' && calDate) $('#s-date').value = calDate; };   // depuis l'agenda : le jour affiché est prérempli
+  $('#fab').onclick = () => { openSheet(null); if (view === 'cal' && calDate) $('#s-date').value = calDate; else if (view === 'home' && planDay) $('#s-date').value = planDay; };   // depuis l'agenda : le jour affiché est prérempli
   const applyTextSize = () => { document.documentElement.style.webkitTextSizeAdjust = document.documentElement.style.textSizeAdjust = (S.textPct || 100) + '%'; };
   applyTextSize();
   const applyRhythm = () => { if (E.setRhythm) E.setRhythm(S.wake == null ? 600 : S.wake, S.sleep == null ? 1380 : S.sleep); };   // lever 10 h / coucher 23 h par défaut : pas de rappel pendant le sommeil
   applyRhythm();
   const toHM = m => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0'), fromHM = s => { const [h, m] = String(s).split(':').map(Number); return h * 60 + (m || 0); };
-  document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => { view = b.dataset.v; stickChat = false; panelOpen = false; render(); scroller().scrollTop = 0; drawPanel(); });
+  document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => { view = b.dataset.v; stickChat = false; panelOpen = false; if (view === 'home') planDay = null; render(); scroller().scrollTop = 0; drawPanel(); });
 
   /* ================= Démarrage ================= */
   load();
