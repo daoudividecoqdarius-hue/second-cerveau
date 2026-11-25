@@ -1,7 +1,7 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.25-40';
+  const VERSION = '2026.11.26-41';
   const API = 'https://second-cerveau-api.second-cerveau-api.workers.dev'; // ton serveur Cloudflare (adresse publique, sans secret)
   const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
@@ -694,7 +694,7 @@
       el('div', { class: 'chips', style: 'margin-top:10px' }, r.go && el('button', { class: 'chip p', type: 'button', text: 'Voir', onclick: () => { r.seen = true; save(); goRecu(r.go); } }), el('button', { class: 'chip g', type: 'button', text: 'OK', onclick: () => { r.seen = true; save(); render(); } }))));
     v.append(card);
   }
-  const showRecus = () => { view = 'chat'; stickChat = false; inboxOpen = true; render(); setTimeout(() => { const c = $('#recus-card') || $('#inbox-card'); if (c) c.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 100); };
+  const showRecus = () => { view = 'chat'; stickChat = false; inboxOpen = true; panelOpen = true; render(); setTimeout(() => { const c = $('#recus-card') || $('#inbox-card'); if (c) c.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 100); };
   async function syncServer() {
     if (!S.srvToken || syncing || navigator.onLine === false) return;
     syncing = true;
@@ -988,7 +988,7 @@
   }
   const daySection = (icon, label, items, cls) => items.length ? [dayHead(icon, label, items, cls), ...items.map(row)] : [];
   let inboxOpen = false, briefOpen = false, lateArmed = false;
-  const goHome = () => { view = 'home'; stickChat = false; render(); scroller().scrollTop = 0; };
+  const goHome = () => { view = 'home'; stickChat = false; panelOpen = false; render(); scroller().scrollTop = 0; };
 
   /* ---------- Rangement par importance ----------
      1) ce qu'il faut faire maintenant (hero + en retard + aujourd'hui) → toujours visible, court
@@ -1117,6 +1117,49 @@
     renderInbox(v);
   }
 
+
+  /* ---------- Page Assistant façon app d'IA : en-tête léger, accueil centré, saisie en pilule ; « Ma journée » dans un panneau ---------- */
+  let panelOpen = false;
+  const SVG = { lines: '<path d="M4 7h16M4 12h10M4 17h14"/>', pen: '<path d="M4 20h4L19 9l-4-4L4 16z"/>', mic: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>', plus: '<path d="M12 5v14M5 12h14"/>' };
+  const icon = (k, sz) => '<svg viewBox="0 0 24 24" width="' + (sz || 22) + '" height="' + (sz || 22) + '" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + SVG[k] + '</svg>';
+  const SPARK = '<svg viewBox="0 0 64 64" width="76" height="76"><defs><linearGradient id="spk" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3d8bff"/><stop offset=".55" stop-color="#9b5cff"/><stop offset="1" stop-color="#ffc933"/></linearGradient></defs><path fill="url(#spk)" d="M32 2c2 15 8 22 30 30-22 8-28 15-30 30-2-15-8-22-30-30C24 24 30 17 32 2z"/><path fill="#fff" fill-opacity=".85" d="M52 6c.6 4 2 6 6 8-4 2-5.400 4-6 8-.6-4-2-6-6-8 4-2 5.400-4 6-8z"/></svg>';
+  function renderTopbar(v, convo) {
+    const { late, day } = dayList(), cnt = late.length + day(today()).length + recusList().length + (S.mail || []).length + askList().length;
+    const btn = (ic, label, fn, badge) => { const b = el('button', { class: 'rbtn', type: 'button', 'aria-label': label, onclick: fn }); b.innerHTML = icon(ic); if (badge) b.append(el('i', { class: 'bdg2', text: String(badge) })); return b; };
+    v.append(el('div', { class: 'atop' }, btn('lines', 'Ma journée', openPanel, cnt),
+      el('div', { class: 'atitle' }, el('b', { text: 'Cerveau' }), el('span', { class: 'dot2' + (aiReady() ? ' on' : '') }), el('small', { text: aiReady() ? 'IA' : 'Mode simple' })),
+      convo ? btn('pen', 'Nouvelle discussion', newChat) : el('span', { class: 'rbtn ghost' })));
+  }
+  const glanceRow = it => {
+    const ev = !!it.ro, lt = !ev && isLate(it);
+    return el('div', { class: 'gr', onclick: ev ? null : () => openSheet(it) },
+      ev ? el('span', { class: 'ico', text: '📅' }) : el('button', { class: 'chk', type: 'button', 'aria-label': 'Terminer', onclick: e => { e.stopPropagation(); complete(it); } }),
+      el('div', { class: 'gb' }, el('div', { class: 'gn', text: it.title }), el('div', { class: 'gm' + (lt ? ' late' : ''), text: it.date ? when(it) + (lt ? ' · en retard' : '') : '' })));
+  };
+  function renderHero(v) {
+    const h = new Date().getHours(), name = (S.name || '').trim();
+    const { late, day } = dayList(), tod = day(today()), list = [...late, ...tod].slice(0, 3);
+    const sub = late.length ? `${late.length} en retard${tod.length ? ' · ' + tod.length + " aujourd'hui" : ''}` : tod.length ? `${tod.length} au programme aujourd'hui` : 'Rien d’urgent 🎉';
+    const spark = el('div', { class: 'spark' }); spark.innerHTML = SPARK;
+    v.append(el('div', { class: 'hero' }, spark,
+      el('h1', { class: 'hi', text: (h < 6 ? 'Bonne nuit' : h < 18 ? 'Bonjour' : 'Bonsoir') + (name ? ', ' + name : '') }),
+      el('p', { class: 'sub2', text: sub }),
+      list.length ? el('div', { class: 'glance' }, ...list.map(glanceRow), el('button', { class: 'glance-more', type: 'button', text: 'Toute ma journée ›', onclick: openPanel })) : null));
+  }
+  function openPanel() { panelOpen = true; drawPanel(); }
+  function closePanel() { panelOpen = false; drawPanel(); }
+  function drawPanel() {
+    const old = $('#panel'), st = old ? (old.querySelector('.pbody') || {}).scrollTop || 0 : 0;
+    if (old) old.remove();
+    if (!panelOpen) return;
+    const body = el('div', { class: 'pbody' });
+    renderBrief(body, false);
+    body.append(el('button', { class: 'more', type: 'button', text: 'Ouvrir mon planning complet', onclick: goHome }));
+    const w = el('div', { id: 'panel', class: 'panelwrap', onclick: e => { if (e.target.id === 'panel') closePanel(); } },
+      el('div', { class: 'panel' }, el('div', { class: 'grab' }), el('div', { class: 'phead' }, el('b', { text: 'Ma journée' }), el('button', { class: 'chip', type: 'button', text: 'Fermer', onclick: closePanel })), body));
+    document.body.append(w); body.scrollTop = st;
+  }
+
   /* Onglet « Aujourd'hui » : le planning complet, jour par jour */
   function renderHome(v) {
     const now = Date.now(), td = today(), { evs, dated, late, day } = dayList(), h = new Date().getHours();
@@ -1211,14 +1254,15 @@
     });
     if (row.childNodes.length) b.append(row);
   }
-  function renderChat(v) {
-    const convo = S.chat.length > 1;                              // une discussion est en cours : elle prend la place
-    renderGreeting(v, convo);
-    renderBrief(v, convo);
-    if (!convo) v.append(el('h2', { text: 'Discute avec ton assistant' }));
+  function renderChat(v0) {
+    const convo = S.chat.length > 1;                              // une discussion est en cours
+    const v = el('div', { class: 'apage' }); v0.append(v);
+    renderTopbar(v, convo);
+    if (!convo) renderHero(v);
     const chat = el('div', { class: 'chat' });
     if (!S.chat.length) S.chat.push({ r: 'a', t: "Salut ! Je suis ton second cerveau. Demande-moi ce que tu veux : planifier ta semaine, un menu, un mail, la météo… ou dis-moi simplement ce que tu dois faire.", ts: Date.now() });
     for (const m of S.chat) {
+      if (!convo && m.t && m.t.indexOf('Salut ! Je suis ton second cerveau') === 0) continue;       // l'accueil remplace ce message
       const b = el('div', { class: 'msg ' + m.r, 'data-mid': m.id });
       const t = el('div', { class: 'mt' });
       if (m.r === 'a') { if (m.t) t.innerHTML = md(m.t); else if (m.stream) t.innerHTML = '<span class="dots"><i></i><i></i><i></i></span>'; } else t.textContent = m.t;
@@ -1250,7 +1294,7 @@
       chat.append(b);
     }
     v.append(chat);
-    const input = el('textarea', { id: 'chatin', rows: '1', placeholder: 'Écris ou parle…', enterkeyhint: 'send', autocapitalize: 'sentences' });
+    const input = el('textarea', { id: 'chatin', rows: '1', placeholder: 'Demande-moi…', enterkeyhint: 'send', autocapitalize: 'sentences' });
     input.value = chatDraft;
     const grow = () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 130) + 'px'; };
     if (S.chat.length <= 1 && aiReady()) {                                                // idées pour démarrer
@@ -1264,7 +1308,7 @@
     for (const s of enabled().filter(x => !x.hidden)) sk.append(el('button', { class: 'chip', type: 'button', onclick: () => { input.value = s.ex; chatDraft = s.ex; grow(); input.focus(); }, text: `${s.icon} ${s.name}` }));
     v.append(sk);
     const send = () => { if (aiBusy) return; const t = input.value; if (!t.trim()) return; input.value = ''; chatDraft = ''; grow(); ask(t); };
-    const mic = el('button', { class: 'mic', type: 'button', 'aria-label': 'Parler', text: '🎤' });
+    const mic = el('button', { class: 'mic', type: 'button', 'aria-label': 'Parler' }); mic.innerHTML = icon('mic', 20);
     mic.onclick = () => {
       const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (!SR) { say("La dictée vocale n'est pas disponible ici. Utilise le micro du clavier iPhone 🎤 (en bas à droite du clavier).", true); render(); return; }
@@ -1279,10 +1323,10 @@
     input.onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } };
     const fileIn = el('input', { type: 'file', accept: 'application/pdf,image/*,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.odp,.rtf,.txt,.csv,.md,.html,.htm,.eml,.ics,.vcf,.json,.epub,.pages', id: 'filein', style: 'display:none' });
     fileIn.onchange = () => { const f = fileIn.files[0]; if (f) handleFile(f); };
-    const clip = el('button', { class: 'mic', type: 'button', 'aria-label': 'Ajouter un document', text: '📎', onclick: () => fileIn.click() });
+    const clip = el('button', { class: 'mic', type: 'button', 'aria-label': 'Ajouter un document', onclick: () => fileIn.click() }); clip.innerHTML = icon('plus', 22);
     const sendBtn = aiBusy ? el('button', { class: 'send stop', type: 'button', 'aria-label': 'Arrêter', text: '■', onclick: () => { if (aiCtl) aiCtl.abort(); } })
       : el('button', { class: 'send', type: 'button', onclick: send, 'aria-label': 'Envoyer', text: '↑' });
-    v.append(el('div', { class: 'composer' }, clip, mic, input, sendBtn));
+    v.append(el('div', { class: 'composer' }, el('div', { class: 'pill' }, clip, input, mic, sendBtn)));
     setTimeout(() => { grow(); if (stickChat && convo) toBottom(); }, 0);
   }
 
@@ -1378,6 +1422,8 @@
         el('button', { class: 'chip p', onclick: () => updateApp(false), text: 'Mettre à jour' }),
         el('button', { class: 'chip', onclick: () => updateApp(true), text: 'Forcer la réinstallation' })),
       el('p', { class: 'hint', id: 'upmsg', text: '' })));
+    v.append(el('div', { class: 'card' }, el('h3', { text: '👤 Ton prénom' }), el('p', { text: 'Pour que l’assistant te salue par ton prénom. Il reste sur ton téléphone.' }),
+      el('input', { type: 'text', class: 'add-in', placeholder: 'Ton prénom', value: S.name || '', style: 'width:100%', onchange: e => { S.name = e.target.value.trim().slice(0, 30); save(); toast('Enregistré'); } })));
     v.append(el('div', { class: 'card' }, el('h3', { text: '🧠 Ce que je sais de toi' }),
       el('p', { text: (S.mem || []).length ? 'Je m’en sers pour mieux t’aider (ces notes sont envoyées à l’IA avec tes questions). Touche une note pour l’oublier.' : 'Rien pour l’instant. Dis par exemple « je suis végétarien » à l’assistant : il te proposera de le retenir.' }),
       el('div', { class: 'chips' }, ...(S.mem || []).map((t, i) => el('button', { class: 'chip', type: 'button', onclick: () => { S.mem.splice(i, 1); save(); render(); }, text: t.slice(0, 44) + ' ✕' })))));
@@ -1742,6 +1788,8 @@
     v.innerHTML = '';
     ({ home: renderHome, cal: renderCal, lists: renderLists, chat: renderChat, settings: renderSettings })[view in { home: 1, cal: 1, lists: 1, chat: 1, settings: 1 } ? view : 'home'](v);
     document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.v === view));
+    document.body.classList.toggle('chatv', view === 'chat');
+    if (panelOpen) drawPanel();
     $('#fab').hidden = view === 'chat' || view === 'settings';
     if (view !== 'chat' || !stickChat) v.scrollTop = scrollY;
     if (keep) { const i = $('#chatin'); if (i) i.focus(); }
@@ -1788,7 +1836,7 @@
   const applyRhythm = () => { if (E.setRhythm) E.setRhythm(S.wake == null ? 600 : S.wake, S.sleep == null ? 1380 : S.sleep); };   // lever 10 h / coucher 23 h par défaut : pas de rappel pendant le sommeil
   applyRhythm();
   const toHM = m => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0'), fromHM = s => { const [h, m] = String(s).split(':').map(Number); return h * 60 + (m || 0); };
-  document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => { view = b.dataset.v; stickChat = false; render(); scroller().scrollTop = 0; });
+  document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => { view = b.dataset.v; stickChat = false; panelOpen = false; render(); scroller().scrollTop = 0; drawPanel(); });
 
   /* ================= Démarrage ================= */
   load();
