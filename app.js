@@ -1,7 +1,7 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.25-39';
+  const VERSION = '2026.11.25-40';
   const API = 'https://second-cerveau-api.second-cerveau-api.workers.dev'; // ton serveur Cloudflare (adresse publique, sans secret)
   const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
@@ -282,7 +282,7 @@
       el('a', { class: 'chip', href: std, style: 'text-decoration:none', text: 'Mail d’Apple' })];
   }
   /* ---------- Assistant IA façon chat : texte en flux, mise en forme, actions que TU valides ---------- */
-  let aiBusy = false, aiCtl = null, chatDraft = '';
+  let aiBusy = false, aiCtl = null, chatDraft = '', stickChat = false;
   const aiReady = () => !!(S.aiOn && S.srvToken && navigator.onLine !== false);
   function aiContext() {
     const td = today(), lim = E.dstr(addDays(21));
@@ -430,7 +430,7 @@
   }
   function ask(text) {
     text = text.trim(); if (!text || aiBusy) return;
-    S.chat.push({ r: 'u', t: text, ts: Date.now() });
+    S.chat.push({ r: 'u', t: text, ts: Date.now() }); stickChat = true;
     const ai = aiReady(), fallback = SKILLS.find(s => s.id === 'ajouter');
     const sk = enabled().find(s => s.id !== 'ajouter' && s.match(text) && !(ai && s.id === 'mail'));
     if (ai && !(sk && text.length <= 70)) { aiStream(text); return; }     // phrases libres ou longues : l'IA ; commandes courtes connues : réponse instantanée
@@ -556,7 +556,7 @@
     return readOther(file);
   }
   async function handleFile(file, mode) {
-    S.chat.push({ r: 'u', t: '📎 ' + file.name, ts: Date.now() });
+    S.chat.push({ r: 'u', t: '📎 ' + file.name, ts: Date.now() }); stickChat = true;
     say('Je lis le document sur ton téléphone, rien n’est envoyé sur internet (sauf le chargement des outils de lecture).', true); render();
     try {
       const rf = await routeFile(file);                              // export Hevy, etc. : reconnu par son contenu
@@ -694,7 +694,7 @@
       el('div', { class: 'chips', style: 'margin-top:10px' }, r.go && el('button', { class: 'chip p', type: 'button', text: 'Voir', onclick: () => { r.seen = true; save(); goRecu(r.go); } }), el('button', { class: 'chip g', type: 'button', text: 'OK', onclick: () => { r.seen = true; save(); render(); } }))));
     v.append(card);
   }
-  const showRecus = () => { view = 'home'; render(); setTimeout(() => { const c = $('#recus-card'); if (c) c.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 100); };
+  const showRecus = () => { view = 'chat'; stickChat = false; inboxOpen = true; render(); setTimeout(() => { const c = $('#recus-card') || $('#inbox-card'); if (c) c.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 100); };
   async function syncServer() {
     if (!S.srvToken || syncing || navigator.onLine === false) return;
     syncing = true;
@@ -959,7 +959,7 @@
   }
   function renderAssistant(v) {
     if (!aiReady() && !radar().length) return;
-    const rd = radar(), pl = S.plan && S.plan.day === today() ? (S.plan.items || []).filter(x => !x.hidden && !(x.prop && (x.prop.doneIdx || []).length)) : [];
+    const rd = radar().filter(r => r.key[0] !== 'l'), pl = S.plan && S.plan.day === today() ? (S.plan.items || []).filter(x => !x.hidden && !(x.prop && (x.prop.doneIdx || []).length)) : [];
     const rdIds = new Set(rd.flatMap(r => r.actions.map(x => x.id)).filter(Boolean));
     for (let k = pl.length - 1; k >= 0; k--) { const a0 = pl[k].prop && pl[k].prop.actions[0]; if (a0 && a0.id && rdIds.has(a0.id)) pl.splice(k, 1); }   // déjà couvert par le radar
     if (!rd.length && !pl.length && !planBusy) return;
@@ -987,24 +987,22 @@
       el('span', { class: 'n', text: tot ? (done ? `${done}/${tot}` : String(tot)) : '' }));
   }
   const daySection = (icon, label, items, cls) => items.length ? [dayHead(icon, label, items, cls), ...items.map(row)] : [];
+  let inboxOpen = false, briefOpen = false, lateArmed = false;
+  const goHome = () => { view = 'home'; stickChat = false; render(); scroller().scrollTop = 0; };
 
-  /* « À faire » : l'essentiel de la journée. full=true (onglet Aujourd'hui) ajoute la semaine, plus tard, et la mémoire ;
-     full=false (en tête de l'Assistant) s'arrête à un aperçu de demain, pour que ça reste court dès l'ouverture de l'app */
-  function renderDueNow(v, full) {
-    const now = Date.now(), td = today(), h = new Date().getHours();
-    v.append(el('div', { class: 'top' },
-      el('div', {}, el('div', { class: 'date', text: new Date().toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' }) }),
-        el('h1', { text: h < 6 ? 'Bonne nuit 🌙' : h < 18 ? 'Bonjour 👋' : 'Bonsoir 🌆' }))));
-
-    renderRecus(v);
-    if (S.gacc && Object.keys(S.gacc).length && Date.now() - (S.gsync || 0) > 45 * 60e3) {
-      v.append(el('button', { class: 'chip', style: 'margin-bottom:12px', onclick: () => connectGoogle(false), text: `🔄 Actualiser l'agenda (dernière synchro ${rel(S.gsync || 0)})` }));
-    }
-    const evs = visibleEvents();
-    // Événements que je ne sais pas classer : je te demande ton avis (2 à la fois)
-    const seen = new Set(), toAsk = [];
-    for (const e of evs) { const k = E.prioKey(e.title); if (e.date >= td && prioOf(e) === 'ask' && !seen.has(k)) { seen.add(k); toAsk.push(e); } }
-    for (const e of toAsk.slice(0, 2)) {
+  /* ---------- Rangement par importance ----------
+     1) ce qu'il faut faire maintenant (hero + en retard + aujourd'hui) → toujours visible, court
+     2) les suggestions de l'assistant
+     3) « À traiter » (reçus, mails, questions) → UNE carte repliable : on ouvre seulement si on veut
+     4) la discussion, avec la zone de saisie collée en bas (là où le pouce arrive) */
+  const recusList = () => (S.recus || []).filter(r => !r.seen && Date.now() - r.ts < 48 * H);
+  const askList = () => {                                           // événements que je ne sais pas classer : je demande ton avis (2 au plus)
+    const td = today(), seen = new Set(), out = [];
+    for (const e of visibleEvents()) { const k = E.prioKey(e.title); if (e.date >= td && prioOf(e) === 'ask' && !seen.has(k)) { seen.add(k); out.push(e); } }
+    return out.slice(0, 2);
+  };
+  function renderToAsk(v) {
+    for (const e of askList()) {
       const setP = lvl => { S.prio = S.prio || {}; S.prio[E.prioKey(e.title)] = lvl; save(); render(); };
       v.append(el('div', { class: 'alert', style: 'border-color:var(--acc)' },
         el('div', { class: 't', text: '🤔 Est-ce important pour toi ?' }),
@@ -1014,34 +1012,8 @@
           el('button', { class: 'chip', onclick: () => setP('normal'), text: 'Normal' }),
           el('button', { class: 'chip', onclick: () => setP('ignore'), text: '🔕 Ignorer' }))));
     }
-    const all = [...open().filter(i => i.date), ...evs.filter(e => e.date >= td && prioOf(e) !== 'low' && prioOf(e) !== 'ask')];
-    const upcoming = all.filter(i => E.dueAt(i) >= now - 30 * 60e3 || isLate(i)).sort((a, b) => (isLate(b) - isLate(a)) || byTime(a, b));
-    const nxt = upcoming.find(i => !i.ro && isLate(i)) || upcoming.find(i => E.dueAt(i) >= now - 30 * 60e3);
-    const todayAll = S.items.filter(i => i.date === td), doneN = todayAll.filter(i => i.done).length, tot = todayAll.length;
-    const pct = tot ? doneN / tot : 0, C = 2 * Math.PI * 26;
-    const ring = el('div', { class: 'ring' });
-    ring.innerHTML = `<svg width="64" height="64" viewBox="0 0 64 64"><circle cx="32" cy="32" r="26" fill="none" stroke="rgba(255,255,255,.3)" stroke-width="7"/><circle cx="32" cy="32" r="26" fill="none" stroke="#fff" stroke-width="7" stroke-linecap="round" stroke-dasharray="${C}" stroke-dashoffset="${C * (1 - pct)}"/></svg>`;
-    ring.append(el('b', { text: tot ? `${doneN}/${tot}` : '—' }));
-    v.append(el('div', { class: 'focus' },
-      el('div', { class: 'l' }, el('small', { text: nxt ? (isLate(nxt) ? 'À rattraper' : 'Prochain rendez-vous') : 'Tout est calme' }),
-        el('div', { class: 'big', text: nxt ? nxt.title : 'Rien d’urgent 🎉' }),
-        el('div', { class: 'when', text: nxt ? `${when(nxt)} · ${rel(E.dueAt(nxt))}` : 'Ajoute ce qui te trotte dans la tête avec le bouton +' })),
-      ring));
-    renderAssistant(v);
-    renderReveil(v);
-
-    for (const it of open().filter(i => i.alertOpen && (!i.date || isLate(i) || E.dueAt(i) - now <= 3 * H))) {   // la carte « Fait » n'apparaît que si l'échéance est proche ou passée
-      v.append(el('div', { class: 'alert' },
-        el('div', { class: 't', text: '🔔 ' + it.title }),
-        el('div', { class: 'm', text: it.date ? `${when(it)} · ${isLate(it) ? 'en retard' : rel(E.dueAt(it))}` : 'À traiter' }),
-        el('div', { class: 'chips' },
-          el('button', { class: 'chip p', onclick: () => complete(it), text: '✓ Fait' }),
-          // le report (+1 h, ce soir, demain) n'est proposé qu'une fois l'échéance passée
-          ...(isLate(it) ? [el('button', { class: 'chip', onclick: () => snooze(it, now + H), text: '+1 h' }),
-            el('button', { class: 'chip', onclick: () => snooze(it, tonight()), text: 'Ce soir' }),
-            el('button', { class: 'chip', onclick: () => snooze(it, tomorrow9()), text: 'Demain' })] : []))));
-    }
-
+  }
+  function renderMails(v) {
     for (const m of (S.mail || []).slice(0, 4)) {
       const doc = S.mailDoc && S.mailDoc[m.id], dd = doc && !doc.none && doc.date ? doc : null;
       const eur = x => x.toFixed(2).replace('.', ',') + ' €';
@@ -1070,19 +1042,90 @@
           el('button', { class: 'chip', onclick: () => dismissMail(m), text: 'Ignorer' }))));
     }
     if ((S.mail || []).length > 4) v.append(el('p', { class: 'hint', text: `+ ${(S.mail || []).length - 4} autre(s) mail(s) à traiter. Traite ceux-ci pour voir la suite.` }));
-
-    const dated = open().filter(i => i.date);
-    const late = dated.filter(isLate).sort(byTime);
+  }
+  function renderInbox(v) {
+    const n = recusList().length + (S.mail || []).length + askList().length;
+    if (!n) return;
+    const wrap = el('div', { class: 'inbox', id: 'inbox-card' }, el('button', { class: 'inboxh', type: 'button', onclick: () => { inboxOpen = !inboxOpen; render(); } },
+      el('span', { class: 'l' }, el('span', { text: '📥' }), el('b', { text: 'À traiter' })), el('span', { class: 'n', text: String(n) }), el('span', { class: 'chev', text: inboxOpen ? '▴' : '▾' })));
+    if (inboxOpen) {
+      const body = el('div', { class: 'inboxb' });
+      renderRecus(body);
+      if (S.gacc && Object.keys(S.gacc).length && Date.now() - (S.gsync || 0) > 45 * 60e3) body.append(el('button', { class: 'chip', style: 'margin-bottom:12px', onclick: () => connectGoogle(false), text: `🔄 Actualiser l'agenda (dernière synchro ${rel(S.gsync || 0)})` }));
+      renderToAsk(body); renderMails(body);
+      wrap.append(body);
+    }
+    v.append(wrap);
+  }
+  function renderFocus(v) {
+    const now = Date.now(), td = today(), evs = visibleEvents();
+    const all = [...open().filter(i => i.date), ...evs.filter(e => e.date >= td && prioOf(e) !== 'low' && prioOf(e) !== 'ask')];
+    const upcoming = all.filter(i => E.dueAt(i) >= now - 30 * 60e3 || isLate(i)).sort((a, b) => (isLate(b) - isLate(a)) || byTime(a, b));
+    const nxt = upcoming.find(i => !i.ro && isLate(i)) || upcoming.find(i => E.dueAt(i) >= now - 30 * 60e3);
+    const todayAll = S.items.filter(i => i.date === td), doneN = todayAll.filter(i => i.done).length, tot = todayAll.length;
+    const pct = tot ? doneN / tot : 0, C = 2 * Math.PI * 26;
+    const ring = el('div', { class: 'ring' });
+    ring.innerHTML = `<svg width="64" height="64" viewBox="0 0 64 64"><circle cx="32" cy="32" r="26" fill="none" stroke="rgba(255,255,255,.3)" stroke-width="7"/><circle cx="32" cy="32" r="26" fill="none" stroke="#fff" stroke-width="7" stroke-linecap="round" stroke-dasharray="${C}" stroke-dashoffset="${C * (1 - pct)}"/></svg>`;
+    ring.append(el('b', { text: tot ? `${doneN}/${tot}` : '—' }));
+    v.append(el('div', { class: 'focus' },
+      el('div', { class: 'l' }, el('small', { text: nxt ? (isLate(nxt) ? 'À rattraper' : 'Prochain rendez-vous') : 'Tout est calme' }),
+        el('div', { class: 'big', text: nxt ? nxt.title : 'Rien d’urgent 🎉' }),
+        el('div', { class: 'when', text: nxt ? `${when(nxt)} · ${rel(E.dueAt(nxt))}` : 'Écris-moi ce qui te trotte dans la tête' })),
+      ring));
+  }
+  const dayList = () => {
+    const evs = visibleEvents(), dated = open().filter(i => i.date), late = dated.filter(isLate).sort(byTime);
     const day = ds => [...dated.filter(i => i.date === ds && !isLate(i)), ...evs.filter(e => e.date === ds)].sort(byTime);
-    v.append(...daySection('⏰', 'En retard', late, 'late'));
-    v.append(...daySection('☀️', "Aujourd'hui", day(td), 'today'));
-
-    if (!full) {
-      const tmr = day(E.dstr(addDays(1)));
-      v.append(...daySection('🌤️', 'Demain', tmr.slice(0, 4)));
-      if (!dated.length && !evs.length) v.append(el('div', { class: 'empty', text: "Rien pour l'instant. Touche + ou écris-moi ci-dessous : « Rappelle-moi de… »" }));
+    return { evs, dated, late, day };
+  };
+  /* En-tête de page : salutation (ou titre quand une discussion est en cours) */
+  function renderGreeting(v, convo) {
+    const h = new Date().getHours();
+    v.append(el('div', { class: 'top' },
+      el('div', {}, el('div', { class: 'date', text: convo ? (aiReady() ? 'IA activée' : 'Mode simple') : new Date().toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' }) }),
+        el('h1', { text: convo ? 'Assistant' : h < 6 ? 'Bonne nuit 🌙' : h < 18 ? 'Bonjour 👋' : 'Bonsoir 🌆' })),
+      convo && el('button', { class: 'chip', type: 'button', onclick: newChat, text: '✎ Nouveau' })));
+  }
+  /* Le « tableau de bord » de l'Assistant : court, trié par importance. Pendant une discussion il se replie en une seule barre. */
+  function renderBrief(v, convo) {
+    const { late, day } = dayList(), tod = day(today()), n = recusList().length + (S.mail || []).length + askList().length;
+    if (convo && !briefOpen) {
+      const parts = [late.length && `⏰ ${late.length} en retard`, tod.length && `☀️ ${tod.length} aujourd'hui`, n && `📥 ${n}`].filter(Boolean).join('  ·  ') || '✅ Rien d’urgent';
+      v.append(el('button', { class: 'bar' + (late.length ? ' late' : ''), type: 'button', onclick: () => { briefOpen = true; render(); } }, el('span', { text: parts }), el('span', { class: 'chev', text: '▾' })));
       return;
     }
+    if (convo) v.append(el('button', { class: 'bar open', type: 'button', onclick: () => { briefOpen = false; render(); } }, el('span', { text: 'Ma journée' }), el('span', { class: 'chev', text: '▴' })));
+    renderFocus(v);
+    const more = k => k > 0 ? el('button', { class: 'more', type: 'button', text: `Voir ${k} de plus`, onclick: goHome }) : '';
+    if (late.length) {
+      const nl = late.length <= 4 ? late.length : 3;               // pas de « voir 1 de plus » pour un seul élément
+      v.append(dayHead('⏰', 'En retard', late, 'late'), ...late.slice(0, nl).map(row), more(late.length - nl));
+      v.append(el('button', { class: 'more', type: 'button', text: lateArmed ? 'Confirmer : tout reporter à demain 9 h ?' : '↪ Tout reporter à demain 9 h', onclick: () => {
+        if (!lateArmed) { lateArmed = true; render(); setTimeout(() => { lateArmed = false; render(); }, 4000); return; }
+        lateArmed = false; const d = E.dstr(addDays(1)); for (const i of late) { i.date = d; i.time = '09:00'; i.lastNotified = Date.now(); i.alertOpen = false; i.snoozeUntil = 0; }
+        save(); toast(`${late.length} reportée${late.length > 1 ? 's' : ''} à demain 9 h`); render(); } }));
+    }
+    const nt = tod.length <= 5 ? tod.length : 4;
+    if (tod.length) v.append(dayHead('☀️', "Aujourd'hui", tod, 'today'), ...tod.slice(0, nt).map(row), more(tod.length - nt));
+    if (!late.length && !tod.length) {
+      const tmr = day(E.dstr(addDays(1)));
+      v.append(el('div', { class: 'empty', text: 'Rien de prévu aujourd’hui 🎉' }));
+      if (tmr.length) v.append(dayHead('🌤️', 'Demain', tmr), ...tmr.slice(0, 3).map(row), more(tmr.length - 3));
+    }
+    renderAssistant(v);
+    renderReveil(v);
+    renderInbox(v);
+  }
+
+  /* Onglet « Aujourd'hui » : le planning complet, jour par jour */
+  function renderHome(v) {
+    const now = Date.now(), td = today(), { evs, dated, late, day } = dayList(), h = new Date().getHours();
+    v.append(el('div', { class: 'top' },
+      el('div', {}, el('div', { class: 'date', text: new Date().toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' }) }),
+        el('h1', { text: 'Mon planning' }))));
+    renderFocus(v);
+    v.append(...daySection('⏰', 'En retard', late, 'late'));
+    v.append(...daySection('☀️', "Aujourd'hui", day(td), 'today'));
     for (let k = 1; k <= 7; k++) {
       const ds = E.dstr(addDays(k)), items = day(ds); if (!items.length) continue;
       const label = k === 1 ? 'Demain' : new Date(ds + 'T00:00').toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
@@ -1094,9 +1137,9 @@
     v.append(...(laterAll ? ls : ls.slice(0, 6)));
     if (later.length > 5) v.append(el('button', { class: 'more', type: 'button', text: laterAll ? 'Réduire' : `Voir les ${later.length - 5} autres`, onclick: () => { laterAll = !laterAll; render(); } }));
     v.append(...daySection('💭', 'À revoir', open().filter(i => E.reviewDue(i, now))));
+    renderInbox(v);
     if (!S.items.length && !S.events.length) v.append(el('div', { class: 'empty', text: "Rien pour l'instant. Appuie sur + ou parle à l'assistant : « Rappelle-moi de… »" }));
   }
-  function renderHome(v) { renderDueNow(v, true); }
 
   function renderBrain(v, noTop) {
     if (!noTop) v.append(el('div', { class: 'top' }, el('div', {}, el('div', { class: 'date', text: 'Tout ce que tu m’as confié' }), el('h1', { text: 'Mémoire 🧠' }))));
@@ -1169,10 +1212,10 @@
     if (row.childNodes.length) b.append(row);
   }
   function renderChat(v) {
-    renderDueNow(v, false);                                       // dès l'ouverture : ce qu'il y a à faire, bien visible — puis la discussion
-    v.append(el('div', { class: 'jr', style: 'border-top:0;margin-top:22px;padding:0 2px' },
-      el('b', { text: '💬 ' + (aiReady() ? 'Discute avec ton assistant' : 'Discuter (mode simple)') }),
-      S.chat.length > 1 && el('button', { class: 'chip', type: 'button', onclick: newChat, text: '✎ Nouveau' })));
+    const convo = S.chat.length > 1;                              // une discussion est en cours : elle prend la place
+    renderGreeting(v, convo);
+    renderBrief(v, convo);
+    if (!convo) v.append(el('h2', { text: 'Discute avec ton assistant' }));
     const chat = el('div', { class: 'chat' });
     if (!S.chat.length) S.chat.push({ r: 'a', t: "Salut ! Je suis ton second cerveau. Demande-moi ce que tu veux : planifier ta semaine, un menu, un mail, la météo… ou dis-moi simplement ce que tu dois faire.", ts: Date.now() });
     for (const m of S.chat) {
@@ -1240,7 +1283,7 @@
     const sendBtn = aiBusy ? el('button', { class: 'send stop', type: 'button', 'aria-label': 'Arrêter', text: '■', onclick: () => { if (aiCtl) aiCtl.abort(); } })
       : el('button', { class: 'send', type: 'button', onclick: send, 'aria-label': 'Envoyer', text: '↑' });
     v.append(el('div', { class: 'composer' }, clip, mic, input, sendBtn));
-    setTimeout(() => { grow(); toBottom(); }, 0);
+    setTimeout(() => { grow(); if (stickChat && convo) toBottom(); }, 0);
   }
 
 
@@ -1700,7 +1743,7 @@
     ({ home: renderHome, cal: renderCal, lists: renderLists, chat: renderChat, settings: renderSettings })[view in { home: 1, cal: 1, lists: 1, chat: 1, settings: 1 } ? view : 'home'](v);
     document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.v === view));
     $('#fab').hidden = view === 'chat' || view === 'settings';
-    if (view !== 'chat') v.scrollTop = scrollY;
+    if (view !== 'chat' || !stickChat) v.scrollTop = scrollY;
     if (keep) { const i = $('#chatin'); if (i) i.focus(); }
   }
 
@@ -1745,7 +1788,7 @@
   const applyRhythm = () => { if (E.setRhythm) E.setRhythm(S.wake == null ? 600 : S.wake, S.sleep == null ? 1380 : S.sleep); };   // lever 10 h / coucher 23 h par défaut : pas de rappel pendant le sommeil
   applyRhythm();
   const toHM = m => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0'), fromHM = s => { const [h, m] = String(s).split(':').map(Number); return h * 60 + (m || 0); };
-  document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => { view = b.dataset.v; render(); scroller().scrollTop = 0; });
+  document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => { view = b.dataset.v; stickChat = false; render(); scroller().scrollTop = 0; });
 
   /* ================= Démarrage ================= */
   load();
