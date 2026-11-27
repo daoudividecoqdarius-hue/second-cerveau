@@ -1,7 +1,7 @@
 /* Second Cerveau : interface, assistant et skills. Tout est local et gratuit. */
 (function () {
   'use strict';
-  const VERSION = '2026.11.26-44';
+  const VERSION = '2026.11.27-45';
   const API = 'https://second-cerveau-api.second-cerveau-api.workers.dev'; // ton serveur Cloudflare (adresse publique, sans secret)
   const DEFAULT_GCLIENT = '18600225788-ni03cjae4r7ugjrdr2pmmddkcrlgslqg.apps.googleusercontent.com'; // ID public, pas un secret
   const E = Engine, H = 3600e3, D = 24 * H;
@@ -812,14 +812,15 @@
     } catch (e) {} finally { sumBusy = false; }
   }
   /* Rapproche un mail d'un événement ou d'une tâche déjà dans ton planning : mots rares en commun (nom, lieu, artiste…) */
-  const STOPW = new Set('lien interne mail note objet fwd message transmis bonjour merci cordialement votre notre vous nous pour avec dans cette entre apres avant https http html idmanif manifestation billet billetterie membres'.split(' '));
+  const STOPW = new Set('lien interne mail note objet fwd message transmis bonjour merci cordialement votre notre vous nous pour avec dans cette entre apres avant https http html idmanif manifestation billet billetterie membres lundi mardi mercredi jeudi vendredi samedi dimanche janvier fevrier avril juillet aout septembre octobre novembre decembre demain aujourd heure heures rappel information informations invitation evenement reservation confirmation commande numero place places paris france toute toutes tous plus moins reponse equipe bienvenue cours essec'.split(' '));
   function relatedTo(m) {
     const words = x => new Set((E.norm(x || '').match(/[a-z0-9]{5,}/g) || []).filter(w => !STOPW.has(w) && !/^\d+$/.test(w)));
     const mine = words([m.subject, m.snippet, m.url].join(' ')); if (!mine.size) return null;
     const td = today(); let best = null, bs = 0;
     for (const x of [...visibleEvents().map(e => ({ ...e, ev: true })), ...open().filter(i => i.date)]) {
-      let sc = 0; for (const w of words(x.title)) if (mine.has(w)) sc += w.length;
-      if (!sc) continue; if (x.date >= td) sc += 3;
+      let sc = 0, n = 0; for (const w of words(x.title)) if (mine.has(w)) { sc += w.length; n++; }
+      /* Signalé par Darius (2026-11-26) : un seul mot commun suffisait → liens absurdes. Il faut 2 mots rares en commun. */
+      if (n < 2) continue; if (x.date >= td) sc += 3;
       if (sc > bs) { bs = sc; best = x; }
     }
     return best;
